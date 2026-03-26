@@ -32,7 +32,7 @@ provider = "github"
 # slug = "my-fabro-app"
 
 # For Azure DevOps:
-# provider = "azuredevops"
+# provider = "azure_devops"
 # ado_org_url = "https://dev.azure.com/myorg"
 # ado_default_project = "MyProject"
 # PAT must be set via ADO_PAT env var (not in config for security)
