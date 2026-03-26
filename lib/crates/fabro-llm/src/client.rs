@@ -108,6 +108,47 @@ impl Client {
             client.register_provider(Arc::new(adapter)).await?;
         }
 
+        // Spark LiteLLM proxy (GLM 4.7 Flash)
+        if let Ok(base) = std::env::var("SPARK_API_BASE") {
+            let adapter = providers::OpenAiCompatibleAdapter::new(
+                std::env::var("SPARK_API_KEY").unwrap_or_else(|_| "none".to_string()),
+                &base,
+            )
+            .with_name("spark");
+            client.register_provider(Arc::new(adapter)).await?;
+        }
+
+        // Azure OpenAI Foundry
+        if let Ok(base_url) = std::env::var("AZURE_OPENAI_BASE_URL") {
+            if let Ok(key) = std::env::var("AZURE_OPENAI_API_KEY") {
+                let adapter =
+                    providers::OpenAiCompatibleAdapter::new(key, &base_url)
+                        .with_name("azure-openai")
+                        .with_auth_header("api-key");
+                client.register_provider(Arc::new(adapter)).await?;
+            }
+        }
+
+        // Azure Anthropic Foundry
+        if let Ok(base_url) = std::env::var("AZURE_ANTHROPIC_BASE_URL") {
+            if let Ok(key) = std::env::var("AZURE_ANTHROPIC_API_KEY") {
+                let adapter = providers::AnthropicAdapter::new(key)
+                    .with_base_url(base_url)
+                    .with_auth_header("api-key");
+                client.register_provider(Arc::new(adapter)).await?;
+            }
+        }
+
+        // LM Studio local
+        if let Ok(base) = std::env::var("LMSTUDIO_API_BASE") {
+            let adapter = providers::OpenAiCompatibleAdapter::new(
+                std::env::var("LMSTUDIO_API_KEY").unwrap_or_else(|_| "lm-studio".to_string()),
+                &base,
+            )
+            .with_name("lmstudio");
+            client.register_provider(Arc::new(adapter)).await?;
+        }
+
         debug!(
             providers = ?client.provider_names(),
             default = ?client.default_provider(),

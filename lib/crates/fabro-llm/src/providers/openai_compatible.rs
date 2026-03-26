@@ -20,6 +20,9 @@ use crate::types::{
 pub struct Adapter {
     pub(crate) http: super::http_api::HttpApi,
     provider_name: String,
+    /// Override the auth header name (default: `Authorization: Bearer {key}`).
+    /// When set (e.g. `"api-key"`), sends `{name}: {key}` instead.
+    auth_header_name: Option<String>,
 }
 
 impl Adapter {
@@ -28,12 +31,21 @@ impl Adapter {
         Self {
             http: super::http_api::HttpApi::new(api_key, base_url),
             provider_name: "openai-compatible".to_string(),
+            auth_header_name: None,
         }
     }
 
     #[must_use]
     pub fn with_name(mut self, name: impl Into<String>) -> Self {
         self.provider_name = name.into();
+        self
+    }
+
+    /// Override the auth header. By default, sends `Authorization: Bearer {key}`.
+    /// With e.g. `"api-key"`, sends `api-key: {key}` instead (Azure Foundry).
+    #[must_use]
+    pub fn with_auth_header(mut self, header_name: impl Into<String>) -> Self {
+        self.auth_header_name = Some(header_name.into());
         self
     }
 
@@ -60,7 +72,11 @@ impl Adapter {
         for (key, value) in &self.http.default_headers {
             req = req.header(key, value);
         }
-        req.bearer_auth(&self.http.api_key)
+        if let Some(header_name) = &self.auth_header_name {
+            req.header(header_name, &self.http.api_key)
+        } else {
+            req.bearer_auth(&self.http.api_key)
+        }
     }
 }
 

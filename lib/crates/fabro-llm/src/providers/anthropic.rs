@@ -15,6 +15,9 @@ use crate::types::{
 pub struct Adapter {
     pub(crate) http: super::http_api::HttpApi,
     provider_name: String,
+    /// Override the auth header name (default: `x-api-key: {key}`).
+    /// When set (e.g. `"api-key"`), sends `{name}: {key}` instead.
+    auth_header_name: Option<String>,
 }
 
 impl Adapter {
@@ -23,6 +26,7 @@ impl Adapter {
         Self {
             http: super::http_api::HttpApi::new(api_key, DEFAULT_BASE_URL),
             provider_name: "anthropic".to_string(),
+            auth_header_name: None,
         }
     }
 
@@ -35,6 +39,14 @@ impl Adapter {
     #[must_use]
     pub fn with_base_url(mut self, base_url: impl Into<String>) -> Self {
         self.http.base_url = base_url.into();
+        self
+    }
+
+    /// Override the auth header. By default, sends `x-api-key: {key}`.
+    /// With e.g. `"api-key"`, sends `api-key: {key}` instead (Azure Foundry).
+    #[must_use]
+    pub fn with_auth_header(mut self, header_name: impl Into<String>) -> Self {
+        self.auth_header_name = Some(header_name.into());
         self
     }
 
@@ -1181,19 +1193,26 @@ fn build_api_request(
         req_builder = req_builder.header(key, value);
     }
 
-    if adapter.provider_name == "anthropic" {
-        req_builder = req_builder
-            .header("x-api-key", &adapter.http.api_key)
-            .header("anthropic-version", "2023-06-01");
+    if adapter.provider_name == "anthropic" || adapter.auth_header_name.is_some() {
+        let auth_header = adapter
+            .auth_header_name
+            .as_deref()
+            .unwrap_or("x-api-key");
+        req_builder = req_builder.header(auth_header, &adapter.http.api_key);
 
-        let include_1m_context = model_info.is_some_and(|m| m.context_window() >= 1_000_000);
-        if let Some(beta_str) = build_beta_header(
-            request.provider_options.as_ref(),
-            auto_cache,
-            is_fast,
-            include_1m_context,
-        ) {
-            req_builder = req_builder.header("anthropic-beta", beta_str);
+        if adapter.provider_name == "anthropic" {
+            req_builder = req_builder.header("anthropic-version", "2023-06-01");
+
+            let include_1m_context =
+                model_info.is_some_and(|m| m.context_window() >= 1_000_000);
+            if let Some(beta_str) = build_beta_header(
+                request.provider_options.as_ref(),
+                auto_cache,
+                is_fast,
+                include_1m_context,
+            ) {
+                req_builder = req_builder.header("anthropic-beta", beta_str);
+            }
         }
     } else {
         req_builder = req_builder.bearer_auth(&adapter.http.api_key);

@@ -1514,6 +1514,7 @@ dependencies = [
  "dialoguer",
  "dotenvy",
  "fabro-model",
+ "fabro-openai-oauth",
  "fabro-util",
  "futures",
  "http",

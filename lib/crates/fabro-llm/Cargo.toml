@@ -33,6 +33,7 @@ clap.workspace = true
 dialoguer.workspace = true
 tracing.workspace = true
 fabro-model = { path = "../fabro-model" }
+fabro-openai-oauth = { path = "../fabro-openai-oauth" }
 fabro-util = { path = "../fabro-util" }
 
 [dev-dependencies]

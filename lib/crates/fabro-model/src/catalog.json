@@ -345,5 +345,41 @@
     "estimated_output_tps": 1000,
     "aliases": ["mercury"],
     "default": true
+  },
+  {
+    "id": "spark-glm-4.7-flash",
+    "provider": "spark",
+    "family": "glm-4",
+    "display_name": "GLM 4.7 Flash (Spark LiteLLM)",
+    "limits": { "context_window": 65535, "max_output": 65535 },
+    "training": null,
+    "knowledge_cutoff": null,
+    "features": { "tools": true, "vision": false, "reasoning": true },
+    "costs": {
+      "input_cost_per_mtok": 0,
+      "output_cost_per_mtok": 0,
+      "cache_input_cost_per_mtok": null
+    },
+    "estimated_output_tps": 100,
+    "aliases": ["spark", "glm-flash"],
+    "default": true
+  },
+  {
+    "id": "qwen3-coder-next",
+    "provider": "lmstudio",
+    "family": "qwen-3",
+    "display_name": "Qwen 3 Coder Next (LM Studio)",
+    "limits": { "context_window": 32768, "max_output": 8192 },
+    "training": null,
+    "knowledge_cutoff": null,
+    "features": { "tools": true, "vision": false, "reasoning": false },
+    "costs": {
+      "input_cost_per_mtok": 0,
+      "output_cost_per_mtok": 0,
+      "cache_input_cost_per_mtok": null
+    },
+    "estimated_output_tps": 30,
+    "aliases": ["lmstudio", "qwen-coder"],
+    "default": true
   }
 ]

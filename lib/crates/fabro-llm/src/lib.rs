@@ -6,6 +6,7 @@ pub mod middleware;
 pub mod provider;
 pub mod providers;
 pub mod retry;
+pub mod token_store;
 pub mod tools;
 pub mod types;
 
