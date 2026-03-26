@@ -18,7 +18,14 @@ pub enum Provider {
     Zai,
     Minimax,
     Inception,
-    #[serde(rename = "openai_compatible", alias = "open_ai_compatible")]
+    #[serde(
+        rename = "openai_compatible",
+        alias = "open_ai_compatible",
+        alias = "spark",
+        alias = "lmstudio",
+        alias = "azure-openai",
+        alias = "azure-anthropic"
+    )]
     OpenAiCompatible,
 }
 
@@ -113,7 +120,9 @@ impl FromStr for Provider {
             "zai" => Ok(Self::Zai),
             "minimax" => Ok(Self::Minimax),
             "inception" | "inception_labs" => Ok(Self::Inception),
-            "openai_compatible" => Ok(Self::OpenAiCompatible),
+            "openai_compatible" | "open_ai_compatible" => Ok(Self::OpenAiCompatible),
+            // Named OpenAI-compatible providers (registered with custom names)
+            "spark" | "lmstudio" | "azure-openai" | "azure-anthropic" => Ok(Self::OpenAiCompatible),
             other => Err(format!("unknown provider: {other}")),
         }
     }
