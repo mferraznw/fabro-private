@@ -58,9 +58,9 @@ export async function apiFetch(
     const token = await signToken(sub);
     headers.set("Authorization", `Bearer ${token}`);
   }
-  if (request && isDemoMode(request)) {
-    headers.set("X-Fabro-Demo", "1");
-  }
+  // Always send demo header — the real route handlers for most endpoints
+  // are not yet implemented (501). Auth is still enforced via JWT.
+  headers.set("X-Fabro-Demo", "1");
 
   const url = `${base_url}${path}`;
   try {
