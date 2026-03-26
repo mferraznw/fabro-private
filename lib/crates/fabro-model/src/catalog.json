@@ -347,7 +347,7 @@
     "default": true
   },
   {
-    "id": "spark-glm-4.7-flash",
+    "id": "glm-4.7-flash",
     "provider": "spark",
     "family": "glm-4",
     "display_name": "GLM 4.7 Flash (Spark LiteLLM)",
@@ -361,7 +361,7 @@
       "cache_input_cost_per_mtok": null
     },
     "estimated_output_tps": 100,
-    "aliases": ["spark", "glm-flash"],
+    "aliases": ["spark", "glm-flash", "glm-4.7-flash"],
     "default": true
   },
   {

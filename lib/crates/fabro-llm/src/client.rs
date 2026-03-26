@@ -226,27 +226,59 @@ impl Client {
 
     /// Resolve the provider for a request.
     fn resolve_provider(&self, request: &Request) -> Result<Arc<dyn ProviderAdapter>, SdkError> {
-        let catalog_provider = fabro_model::Catalog::builtin()
-            .get(&request.model)
-            .map(|info| info.provider.to_string());
+        // If request explicitly names a provider, use it directly.
+        if let Some(ref provider) = request.provider {
+            if let Some(p) = self.providers.get(provider.as_str()) {
+                return Ok(p.clone());
+            }
+        }
 
-        let provider_name = request
-            .provider
-            .as_deref()
-            .or(catalog_provider.as_deref())
-            .or(self.default_provider.as_deref())
-            .ok_or_else(|| SdkError::Configuration {
-                message: "No provider specified and no default provider set".into(),
-                source: None,
-            })?;
+        // Look up model in catalog to find its provider.
+        let catalog_model = fabro_model::Catalog::builtin().get(&request.model);
 
-        self.providers
-            .get(provider_name)
-            .cloned()
-            .ok_or_else(|| SdkError::Configuration {
-                message: format!("Provider '{provider_name}' not registered"),
-                source: None,
-            })
+        if let Some(info) = &catalog_model {
+            // First try the canonical provider name (e.g., "anthropic", "openai").
+            let canonical = info.provider.to_string();
+            if let Some(p) = self.providers.get(&canonical) {
+                return Ok(p.clone());
+            }
+
+            // For OpenAiCompatible models, the canonical name won't match named
+            // registrations (e.g., "spark", "lmstudio"). Scan registered providers
+            // whose adapter name matches common aliases for this model.
+            if info.provider == fabro_model::Provider::OpenAiCompatible {
+                // Try well-known prefixes: model ID often starts with the provider name
+                for (name, adapter) in &self.providers {
+                    if request.model.starts_with(name)
+                        || info.aliases.iter().any(|a| a.eq_ignore_ascii_case(name))
+                    {
+                        return Ok(adapter.clone());
+                    }
+                }
+                // Fall back to first registered non-builtin provider
+                for (name, adapter) in &self.providers {
+                    if !["anthropic", "openai", "gemini"].contains(&name.as_str()) {
+                        return Ok(adapter.clone());
+                    }
+                }
+            }
+        }
+
+        // Fall back to default provider.
+        if let Some(ref default) = self.default_provider {
+            if let Some(p) = self.providers.get(default) {
+                return Ok(p.clone());
+            }
+        }
+
+        Err(SdkError::Configuration {
+            message: format!(
+                "No provider found for model '{}'. Registered: {:?}",
+                request.model,
+                self.provider_names()
+            ),
+            source: None,
+        })
     }
 
     /// Send a blocking request (Section 4.1).
