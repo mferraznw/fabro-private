@@ -46,7 +46,7 @@ export async function loader({ request }: Route.LoaderArgs) {
       throw redirect("/auth/login?error=unauthorized");
     }
 
-    session.set("userUrl", `google:${googleUser.email}`);
+    session.set("userUrl", `google/${googleUser.email}`);
     session.set("login", googleUser.email);
     session.set("name", googleUser.name);
     session.set("email", googleUser.email);
