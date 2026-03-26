@@ -1,0 +1,49 @@
+# Fabro Server Configuration
+# Copy to ~/.fabro/server.toml and customize
+
+# ---------------------------------------------------------------------------
+# API Server
+# ---------------------------------------------------------------------------
+[api]
+base_url = "http://localhost:3000"
+# authentication_strategy = "jwt"          # default
+# authentication_strategy = "insecure_disabled"  # for local dev
+
+# ---------------------------------------------------------------------------
+# Web App
+# ---------------------------------------------------------------------------
+[web]
+url = "http://localhost:5173"
+
+# Auth provider: "github", "google", or "insecure_disabled"
+[web.auth]
+provider = "github"
+# provider = "google"
+# google_client_id = "your-client-id.apps.googleusercontent.com"
+# provider = "insecure_disabled"   # bypasses auth entirely (dev/testing)
+
+# ---------------------------------------------------------------------------
+# Git Provider
+# ---------------------------------------------------------------------------
+[git]
+provider = "github"
+# app_id = "12345"
+# client_id = "Iv1.abc123"
+# slug = "my-fabro-app"
+
+# For Azure DevOps:
+# provider = "azuredevops"
+# ado_org_url = "https://dev.azure.com/myorg"
+# ado_default_project = "MyProject"
+# ado_pat = "..."  # or set ADO_PAT env var
+
+[git.author]
+name = "Fabro"
+email = "bot@fabro.sh"
+
+# ---------------------------------------------------------------------------
+# Features
+# ---------------------------------------------------------------------------
+[features]
+session_sandboxes = false
+retros = false

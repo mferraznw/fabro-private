@@ -9,6 +9,17 @@ use fabro_github::{self as github_app, ssh_url_to_https, GitHubAppCredentials};
 use crate::conclusion::Conclusion;
 use fabro_retro::retro::Retro;
 
+/// Provider-agnostic git credentials for pull request creation.
+#[derive(Debug, Clone)]
+pub enum GitCredentials {
+    GitHub(GitHubAppCredentials),
+    AzureDevops {
+        org_url: String,
+        pat: String,
+        default_project: String,
+    },
+}
+
 /// Record of a pull request created for a workflow run.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PullRequestRecord {
@@ -346,7 +357,7 @@ pub struct AutoMergeConfig {
 /// the diff was empty, or `Err` on failure.
 #[allow(clippy::too_many_arguments)]
 pub async fn maybe_open_pull_request(
-    creds: &GitHubAppCredentials,
+    creds: &GitCredentials,
     origin_url: &str,
     base_branch: &str,
     head_branch: &str,
@@ -362,13 +373,58 @@ pub async fn maybe_open_pull_request(
         return Ok(None);
     }
 
-    let https_url = ssh_url_to_https(origin_url);
-    let (owner, repo) = github_app::parse_github_owner_repo(&https_url)?;
-
     let body = build_pr_body(diff, goal, model, run_dir).await?;
     let body = truncate_pr_body(&body);
-
     let title = pr_title_from_goal(goal);
+
+    match creds {
+        GitCredentials::GitHub(github_creds) => {
+            open_github_pr(
+                github_creds,
+                origin_url,
+                base_branch,
+                head_branch,
+                &title,
+                &body,
+                draft,
+                auto_merge,
+            )
+            .await
+        }
+        GitCredentials::AzureDevops {
+            org_url,
+            pat,
+            default_project,
+        } => {
+            open_ado_pr(
+                org_url,
+                pat,
+                default_project,
+                origin_url,
+                base_branch,
+                head_branch,
+                &title,
+                &body,
+            )
+            .await
+        }
+    }
+}
+
+/// Create a pull request on GitHub.
+#[allow(clippy::too_many_arguments)]
+async fn open_github_pr(
+    creds: &GitHubAppCredentials,
+    origin_url: &str,
+    base_branch: &str,
+    head_branch: &str,
+    title: &str,
+    body: &str,
+    draft: bool,
+    auto_merge: Option<AutoMergeConfig>,
+) -> Result<Option<PullRequestRecord>, String> {
+    let https_url = ssh_url_to_https(origin_url);
+    let (owner, repo) = github_app::parse_github_owner_repo(&https_url)?;
 
     let created = github_app::create_pull_request(
         creds,
@@ -376,8 +432,8 @@ pub async fn maybe_open_pull_request(
         &repo,
         base_branch,
         head_branch,
-        &title,
-        &body,
+        title,
+        body,
         draft,
     )
     .await?;
@@ -413,7 +469,68 @@ pub async fn maybe_open_pull_request(
         repo,
         base_branch: base_branch.to_string(),
         head_branch: head_branch.to_string(),
-        title,
+        title: title.to_string(),
+    }))
+}
+
+/// Create a pull request on Azure DevOps.
+#[allow(clippy::too_many_arguments)]
+async fn open_ado_pr(
+    org_url: &str,
+    pat: &str,
+    default_project: &str,
+    origin_url: &str,
+    base_branch: &str,
+    head_branch: &str,
+    title: &str,
+    body: &str,
+) -> Result<Option<PullRequestRecord>, String> {
+    // Parse the repo URL to extract project and repo name.
+    // Falls back to default_project if the URL is not a standard ADO URL.
+    let (project, repo_name) =
+        if let Some((_org, project, repo)) = fabro_ado::parse_ado_url(origin_url) {
+            (project, repo)
+        } else {
+            // Best-effort: use the last path segment as repo name
+            let repo = origin_url
+                .trim_end_matches('/')
+                .trim_end_matches(".git")
+                .rsplit('/')
+                .next()
+                .unwrap_or("repo")
+                .to_string();
+            (default_project.to_string(), repo)
+        };
+
+    let client = fabro_ado::AdoClient::new(org_url, pat);
+    let pr_request = fabro_ado::CreatePrRequest {
+        source_ref_name: format!("refs/heads/{head_branch}"),
+        target_ref_name: format!("refs/heads/{base_branch}"),
+        title: title.to_string(),
+        description: Some(body.to_string()),
+    };
+
+    let created = client
+        .create_pull_request(&project, &repo_name, &pr_request)
+        .await
+        .map_err(|e| format!("ADO pull request creation failed: {e}"))?;
+
+    // Build a web URL for the PR
+    let html_url = format!(
+        "{org_url}/{project}/_git/{repo_name}/pullrequest/{}",
+        created.pull_request_id
+    );
+
+    info!(pr_url = %html_url, pr_id = created.pull_request_id, "Pull request created on Azure DevOps");
+
+    Ok(Some(PullRequestRecord {
+        html_url,
+        number: created.pull_request_id,
+        owner: project.clone(),
+        repo: repo_name,
+        base_branch: base_branch.to_string(),
+        head_branch: head_branch.to_string(),
+        title: title.to_string(),
     }))
 }
 
@@ -927,10 +1044,10 @@ mod tests {
     #[tokio::test]
     async fn empty_diff_returns_none() {
         let tmp = tempfile::tempdir().unwrap();
-        let creds = GitHubAppCredentials {
+        let creds = GitCredentials::GitHub(GitHubAppCredentials {
             app_id: "123".to_string(),
             private_key_pem: "unused".to_string(),
-        };
+        });
         let result = maybe_open_pull_request(
             &creds,
             "https://github.com/owner/repo.git",

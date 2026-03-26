@@ -388,8 +388,9 @@ async fn create_from(
         .model
         .unwrap_or_else(|| Catalog::builtin().default_from_env().id.clone());
 
+    let git_creds = fabro_workflows::pull_request::GitCredentials::GitHub(creds);
     let record = fabro_workflows::pull_request::maybe_open_pull_request(
-        &creds,
+        &git_creds,
         &origin_url,
         base_branch,
         run_branch,

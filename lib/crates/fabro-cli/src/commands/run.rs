@@ -1660,8 +1660,10 @@ pub async fn run_command(
                         None
                     };
 
+                    let git_creds =
+                        fabro_workflows::pull_request::GitCredentials::GitHub(creds.clone());
                     match fabro_workflows::pull_request::maybe_open_pull_request(
-                        creds,
+                        &git_creds,
                         origin,
                         base_branch,
                         run_branch,

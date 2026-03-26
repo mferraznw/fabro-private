@@ -1745,6 +1745,7 @@ dependencies = [
  "chrono",
  "dirs",
  "dotenvy",
+ "fabro-ado",
  "fabro-agent",
  "fabro-config",
  "fabro-devcontainer",
