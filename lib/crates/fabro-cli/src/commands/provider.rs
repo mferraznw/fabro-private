@@ -19,14 +19,16 @@ pub async fn login_command(args: ProviderLoginArgs) -> Result<()> {
         .join(".fabro");
     std::fs::create_dir_all(&arc_dir)?;
 
-    let use_oauth = args.provider == Provider::OpenAi
+    let use_oauth = matches!(args.provider, Provider::OpenAi | Provider::Anthropic)
         && tokio::task::spawn_blocking(|| {
             provider_auth::prompt_confirm("Log in via browser (OAuth)?", true)
         })
         .await??;
 
-    let env_pairs = if use_oauth {
+    let env_pairs = if use_oauth && args.provider == Provider::OpenAi {
         provider_auth::run_openai_oauth_or_api_key(&s).await?
+    } else if use_oauth && args.provider == Provider::Anthropic {
+        provider_auth::run_anthropic_oauth_or_api_key(&s).await?
     } else {
         let (env_var, key) = provider_auth::prompt_and_validate_key(args.provider, &s).await?;
         vec![(env_var, key)]

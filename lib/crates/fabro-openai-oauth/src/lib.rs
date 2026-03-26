@@ -532,6 +532,169 @@ pub async fn run_browser_flow(issuer: &str, client_id: &str) -> Result<TokenResp
 }
 
 // ---------------------------------------------------------------------------
+// Anthropic OAuth
+// ---------------------------------------------------------------------------
+
+pub const ANTHROPIC_CLIENT_ID: &str = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
+pub const ANTHROPIC_AUTHORIZE_URL: &str = "https://claude.ai/oauth/authorize";
+pub const ANTHROPIC_TOKEN_URL: &str = "https://console.anthropic.com/v1/oauth/token";
+pub const ANTHROPIC_REDIRECT_URI: &str = "https://console.anthropic.com/oauth/code/callback";
+pub const ANTHROPIC_SCOPES: &str = "org:create_api_key user:profile user:inference";
+
+/// Build the Anthropic OAuth authorization URL.
+pub fn build_anthropic_authorize_url(pkce: &PkceCodes, state: &str) -> String {
+    let params = encode_form(&[
+        ("code", "true"),
+        ("client_id", ANTHROPIC_CLIENT_ID),
+        ("response_type", "code"),
+        ("redirect_uri", ANTHROPIC_REDIRECT_URI),
+        ("scope", ANTHROPIC_SCOPES),
+        ("code_challenge", &pkce.challenge),
+        ("code_challenge_method", "S256"),
+        ("state", state),
+    ]);
+    format!("{ANTHROPIC_AUTHORIZE_URL}?{params}")
+}
+
+/// Exchange an Anthropic authorization code for tokens.
+pub async fn anthropic_exchange_code(
+    client: &reqwest::Client,
+    code: &str,
+    state: &str,
+    code_verifier: &str,
+) -> Result<TokenResponse, String> {
+    tracing::debug!("Exchanging Anthropic authorization code");
+
+    let body = serde_json::json!({
+        "grant_type": "authorization_code",
+        "client_id": ANTHROPIC_CLIENT_ID,
+        "code": code,
+        "state": state,
+        "redirect_uri": ANTHROPIC_REDIRECT_URI,
+        "code_verifier": code_verifier,
+    });
+
+    let resp = client
+        .post(ANTHROPIC_TOKEN_URL)
+        .header("content-type", "application/json")
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("Anthropic token exchange failed: {e}"))?;
+
+    let status = resp.status();
+    if !status.is_success() {
+        let body_text = resp.text().await.unwrap_or_default();
+        return Err(format!(
+            "Anthropic token exchange failed ({status}): {body_text}"
+        ));
+    }
+
+    // Anthropic returns access_token, refresh_token, expires_in but may not include id_token
+    #[derive(Deserialize)]
+    struct AnthropicTokenResponse {
+        access_token: String,
+        refresh_token: String,
+        expires_in: Option<u64>,
+    }
+
+    let tokens: AnthropicTokenResponse = resp
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse Anthropic token response: {e}"))?;
+
+    tracing::info!(expires_in = ?tokens.expires_in, "Anthropic token exchange completed");
+    Ok(TokenResponse {
+        id_token: String::new(), // Anthropic doesn't provide id_token
+        access_token: tokens.access_token,
+        refresh_token: tokens.refresh_token,
+        expires_in: tokens.expires_in,
+    })
+}
+
+/// Refresh an Anthropic OAuth token.
+pub async fn anthropic_refresh_token(
+    client: &reqwest::Client,
+    refresh_token: &str,
+) -> Result<TokenResponse, String> {
+    tracing::debug!("Refreshing Anthropic OAuth token");
+
+    let body = serde_json::json!({
+        "grant_type": "refresh_token",
+        "client_id": ANTHROPIC_CLIENT_ID,
+        "refresh_token": refresh_token,
+    });
+
+    let resp = client
+        .post(ANTHROPIC_TOKEN_URL)
+        .header("content-type", "application/json")
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("Anthropic token refresh failed: {e}"))?;
+
+    let status = resp.status();
+    if !status.is_success() {
+        let body_text = resp.text().await.unwrap_or_default();
+        return Err(format!(
+            "Anthropic token refresh failed ({status}): {body_text}"
+        ));
+    }
+
+    #[derive(Deserialize)]
+    struct AnthropicTokenResponse {
+        access_token: String,
+        refresh_token: String,
+        expires_in: Option<u64>,
+    }
+
+    let tokens: AnthropicTokenResponse = resp
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse Anthropic refresh response: {e}"))?;
+
+    tracing::info!(expires_in = ?tokens.expires_in, "Anthropic token refreshed");
+    Ok(TokenResponse {
+        id_token: String::new(),
+        access_token: tokens.access_token,
+        refresh_token: tokens.refresh_token,
+        expires_in: tokens.expires_in,
+    })
+}
+
+/// Run the Anthropic OAuth code-paste flow.
+/// Opens browser, user authenticates, pastes code back.
+pub async fn run_anthropic_browser_flow() -> Result<TokenResponse, String> {
+    let pkce = generate_pkce();
+    let state = pkce.verifier.clone(); // Anthropic uses verifier as state
+
+    let auth_url = build_anthropic_authorize_url(&pkce, &state);
+
+    tracing::info!("Anthropic OAuth flow started");
+
+    if let Err(e) = open::that(&auth_url) {
+        tracing::warn!("Could not open browser: {e}");
+        eprintln!("Open this URL in your browser:\n{auth_url}");
+    }
+
+    eprintln!("\nAfter authenticating, you'll see a code on the Anthropic console.");
+    eprintln!("Paste the full code here (format: code#state):");
+
+    let mut input = String::new();
+    std::io::stdin()
+        .read_line(&mut input)
+        .map_err(|e| format!("Failed to read input: {e}"))?;
+    let input = input.trim();
+
+    let parts: Vec<&str> = input.splitn(2, '#').collect();
+    let code = parts.first().ok_or("No code provided")?;
+    let returned_state = parts.get(1).unwrap_or(&"");
+
+    let client = reqwest::Client::new();
+    anthropic_exchange_code(&client, code, returned_state, &pkce.verifier).await
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 

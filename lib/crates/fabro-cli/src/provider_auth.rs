@@ -107,6 +107,55 @@ pub(crate) async fn run_openai_oauth_or_api_key(s: &Styles) -> Result<Vec<(Strin
 }
 
 // ---------------------------------------------------------------------------
+// Anthropic OAuth browser flow with API-key fallback
+// ---------------------------------------------------------------------------
+
+/// Run the Anthropic OAuth browser flow (code-paste), falling back to manual
+/// API key entry on failure. Returns the env-var pairs to persist.
+pub(crate) async fn run_anthropic_oauth_or_api_key(s: &Styles) -> Result<Vec<(String, String)>> {
+    eprintln!(
+        "  {}",
+        s.dim
+            .apply_to("Opening browser for Anthropic login (Claude Pro/Max)...")
+    );
+    match fabro_openai_oauth::run_anthropic_browser_flow().await {
+        Ok(tokens) => {
+            tracing::info!("Anthropic OAuth flow completed");
+            let mut pairs = vec![
+                ("ANTHROPIC_API_KEY".to_string(), tokens.access_token.clone()),
+                ("ANTHROPIC_REFRESH_TOKEN".to_string(), tokens.refresh_token),
+            ];
+            if let Some(expires_in) = tokens.expires_in {
+                let expires_at = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis() as u64
+                    + expires_in * 1000;
+                pairs.push((
+                    "ANTHROPIC_TOKEN_EXPIRES_AT".to_string(),
+                    expires_at.to_string(),
+                ));
+            }
+            eprintln!(
+                "  {} Anthropic configured via browser login",
+                s.green.apply_to("✔")
+            );
+            Ok(pairs)
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "Anthropic OAuth flow failed");
+            eprintln!("  Browser login failed: {e}");
+            eprintln!(
+                "  {}",
+                s.dim.apply_to("Falling back to manual API key entry.")
+            );
+            let (env_var, key) = prompt_and_validate_key(Provider::Anthropic, s).await?;
+            Ok(vec![(env_var, key)])
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Interactive prompts
 // ---------------------------------------------------------------------------
 
