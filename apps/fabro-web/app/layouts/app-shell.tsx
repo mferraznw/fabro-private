@@ -42,8 +42,9 @@ export async function loader({ request }: Route.LoaderArgs) {
   const config = getAppConfig();
   const { provider } = config.web.auth;
   const demoMode = isDemoMode(request);
+  const branding = config.branding;
   if (provider === "insecure_disabled") {
-    return { user: DEMO_USER, demoMode, features: config.features };
+    return { user: DEMO_USER, demoMode, features: config.features, branding };
   }
   if (provider === "github" && !isGitHubAppConfigured()) {
     throw redirect("/setup");
@@ -52,7 +53,7 @@ export async function loader({ request }: Route.LoaderArgs) {
     throw redirect("/setup");
   }
   const user = await requireUser(request);
-  return { user, provider, demoMode, features: config.features };
+  return { user, provider, demoMode, features: config.features, branding };
 }
 
 export async function action({ request }: Route.ActionArgs) {
@@ -80,7 +81,7 @@ function classNames(...classes: Array<string | false | null | undefined>) {
 }
 
 export default function AppShell({ loaderData }: Route.ComponentProps) {
-  const { user, provider, demoMode } = loaderData;
+  const { user, provider, demoMode, branding } = loaderData;
   const { pathname } = useLocation();
   const matches = useMatches();
   const { theme, toggle } = useTheme();
@@ -103,7 +104,13 @@ export default function AppShell({ loaderData }: Route.ComponentProps) {
             <div className="flex items-center">
               <div className="shrink-0">
                 <Link to="/start">
-                  <img alt="Fabro" src={theme === "dark" ? "/logotype.svg" : "/logotype-light.svg"} className="h-8 w-auto" />
+                  {branding?.alt_logo_url ? (
+                    <img alt={branding.alt_title ?? "Fabro"} src={branding.alt_logo_url} className="h-8 w-auto" />
+                  ) : branding?.alt_title ? (
+                    <span className="text-xl font-semibold text-heading">{branding.alt_title}</span>
+                  ) : (
+                    <img alt="Fabro" src={theme === "dark" ? "/logotype.svg" : "/logotype-light.svg"} className="h-8 w-auto" />
+                  )}
                 </Link>
               </div>
               <div className="hidden md:block">

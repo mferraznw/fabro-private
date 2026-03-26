@@ -31,11 +31,17 @@ interface WebConfig {
   auth: AuthConfig;
 }
 
+interface BrandingConfig {
+  alt_logo_url?: string;
+  alt_title?: string;
+}
+
 interface AppConfig {
   web: WebConfig;
   api: ApiConfig;
   git: GitConfig;
   features: Features;
+  branding: BrandingConfig;
 }
 
 const AUTH_DEFAULTS: AuthConfig = {
@@ -98,6 +104,10 @@ function loadAppConfig(): AppConfig {
       : { ...API_DEFAULTS, ...rawApi },
     git: { ...GIT_DEFAULTS, ...rawGit },
     features: { ...FEATURES_DEFAULTS, ...rawFeatures },
+    branding: {
+      alt_logo_url: process.env.FABRO_ALT_LOGO_URL || undefined,
+      alt_title: process.env.FABRO_ALT_TITLE || undefined,
+    },
   };
 }
 

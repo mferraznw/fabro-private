@@ -33,12 +33,12 @@ export function meta({}: Route.MetaArgs) {
 }
 
 export async function loader({ request }: Route.LoaderArgs) {
-  const { features } = getAppConfig();
+  const { features, branding } = getAppConfig();
   const { data: apiSessions } = await apiJson<PaginatedSessionList>("/sessions", { request });
   const sessionGroups = groupSessionsByDate(
     apiSessions.map((s) => ({ id: s.id, title: s.title, created_at: s.created_at }))
   );
-  return { sessionGroups, features };
+  return { sessionGroups, features, branding };
 }
 
 const projects = [
@@ -99,7 +99,7 @@ function SessionSidebar({ groups }: { groups: { label: string; sessions: { id: s
 }
 
 export default function Start({ loaderData }: Route.ComponentProps) {
-  const { sessionGroups, features } = loaderData;
+  const { sessionGroups, features, branding } = loaderData;
   const [prompt, setPrompt] = useState("");
   const [project, setProject] = useState(projects[0]);
   const [branch, setBranch] = useState(branches[0]);
@@ -136,8 +136,12 @@ export default function Start({ loaderData }: Route.ComponentProps) {
       <div className="flex-1 flex flex-col items-center pt-[12vh] px-4">
         <div className="w-full max-w-2xl">
           <h1 className="flex items-center justify-center gap-3 text-[2rem] font-medium tracking-tight text-fg-2 text-center mb-8">
-            <img src="/logo.svg" alt="" className="size-9" />
-            What do you want to build?
+            {branding?.alt_logo_url ? (
+              <img src={branding.alt_logo_url} alt="" className="size-9" />
+            ) : (
+              <img src="/logo.svg" alt="" className="size-9" />
+            )}
+            {branding?.alt_title ?? "What do you want to build?"}
           </h1>
 
           <div className="relative group">
