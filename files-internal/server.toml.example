@@ -35,7 +35,7 @@ provider = "github"
 # provider = "azuredevops"
 # ado_org_url = "https://dev.azure.com/myorg"
 # ado_default_project = "MyProject"
-# ado_pat = "..."  # or set ADO_PAT env var
+# PAT must be set via ADO_PAT env var (not in config for security)
 
 [git.author]
 name = "Fabro"

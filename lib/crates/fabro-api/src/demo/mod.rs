@@ -3261,7 +3261,6 @@ mod settings {
                 client_id: Some("Iv1.abc123".into()),
                 slug: Some("fabro-dev".into()),
                 ado_org_url: None,
-                ado_pat: None,
                 ado_default_project: None,
                 author: Default::default(),
                 webhooks: None,

@@ -92,7 +92,7 @@ pub struct GitConfig {
     pub client_id: Option<String>,
     pub slug: Option<String>,
     pub ado_org_url: Option<String>,
-    pub ado_pat: Option<String>,
+    /// ADO default project name. PAT should be set via `ADO_PAT` env var only.
     pub ado_default_project: Option<String>,
     #[serde(default)]
     pub author: GitAuthorConfig,

@@ -154,22 +154,31 @@ impl Client {
 
         // Azure OpenAI Foundry
         if let Ok(base_url) = std::env::var("AZURE_OPENAI_BASE_URL") {
-            if let Ok(key) = std::env::var("AZURE_OPENAI_API_KEY") {
-                let adapter = providers::OpenAiCompatibleAdapter::new(key, &base_url)
-                    .with_name("azure-openai")
-                    .with_auth_header("api-key");
-                client.register_provider(Arc::new(adapter)).await?;
-            }
+            let key =
+                std::env::var("AZURE_OPENAI_API_KEY").map_err(|_| SdkError::Configuration {
+                    message: "AZURE_OPENAI_API_KEY is required when AZURE_OPENAI_BASE_URL is set"
+                        .into(),
+                    source: None,
+                })?;
+            let adapter = providers::OpenAiCompatibleAdapter::new(key, &base_url)
+                .with_name("azure-openai")
+                .with_auth_header("api-key");
+            client.register_provider(Arc::new(adapter)).await?;
         }
 
         // Azure Anthropic Foundry
         if let Ok(base_url) = std::env::var("AZURE_ANTHROPIC_BASE_URL") {
-            if let Ok(key) = std::env::var("AZURE_ANTHROPIC_API_KEY") {
-                let adapter = providers::AnthropicAdapter::new(key)
-                    .with_base_url(base_url)
-                    .with_auth_header("api-key");
-                client.register_provider(Arc::new(adapter)).await?;
-            }
+            let key =
+                std::env::var("AZURE_ANTHROPIC_API_KEY").map_err(|_| SdkError::Configuration {
+                    message:
+                        "AZURE_ANTHROPIC_API_KEY is required when AZURE_ANTHROPIC_BASE_URL is set"
+                            .into(),
+                    source: None,
+                })?;
+            let adapter = providers::AnthropicAdapter::new(key)
+                .with_base_url(base_url)
+                .with_auth_header("api-key");
+            client.register_provider(Arc::new(adapter)).await?;
         }
 
         // LM Studio local

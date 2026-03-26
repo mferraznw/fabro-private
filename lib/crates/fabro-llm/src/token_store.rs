@@ -47,6 +47,8 @@ pub struct OAuthTokenStore {
     http: reqwest::Client,
     /// Buffer before expiry to trigger refresh (5 minutes).
     buffer_ms: u64,
+    /// Serializes refresh operations to prevent concurrent token rotation.
+    refresh_lock: tokio::sync::Mutex<()>,
 }
 
 impl OAuthTokenStore {
@@ -55,6 +57,7 @@ impl OAuthTokenStore {
             state: Arc::new(RwLock::new(config)),
             http: reqwest::Client::new(),
             buffer_ms: 300_000,
+            refresh_lock: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -66,6 +69,17 @@ impl OAuthTokenStore {
     }
 
     async fn refresh(&self) -> Result<String, String> {
+        // Serialize refresh operations to prevent concurrent token rotation.
+        let _guard = self.refresh_lock.lock().await;
+
+        // Double-check: another task may have refreshed while we waited for the lock.
+        {
+            let state = self.state.read().await;
+            if Self::now_ms() + self.buffer_ms < state.expires_at {
+                return Ok(state.access_token.clone());
+            }
+        }
+
         let state = self.state.read().await;
         let refresh_token = state.refresh_token.clone();
         let issuer = state.issuer.clone();
