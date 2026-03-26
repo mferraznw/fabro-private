@@ -168,7 +168,12 @@ fn try_jwt(
         return Err(ApiError::forbidden());
     }
 
-    // Extract GitHub username from sub claim URL (last path segment)
+    // Wildcard: "*" allows any authenticated user
+    if allowed_usernames.iter().any(|u| u == "*") {
+        return Ok(());
+    }
+
+    // Extract username from sub claim (last path/separator segment)
     let username = token_data
         .claims
         .sub
