@@ -1,3 +1,4 @@
+pub mod auth_profiles;
 pub mod cli;
 pub mod client;
 pub mod error;

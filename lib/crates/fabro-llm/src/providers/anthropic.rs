@@ -1,11 +1,14 @@
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine};
 
+use std::sync::Arc;
+
 use crate::error::SdkError;
 use crate::provider::{ProviderAdapter, StreamEventStream};
 use crate::providers::common::{
     extract_system_prompt, parse_error_body, parse_rate_limit_headers, parse_retry_after,
     send_and_read_response,
 };
+use crate::token_store::TokenStore;
 use crate::types::{
     ContentPart, FinishReason, Message, Request, Response, ResponseFormatType, Role, StreamEvent,
     ThinkingData, ToolCall, ToolChoice, ToolDefinition, Usage,
@@ -18,6 +21,8 @@ pub struct Adapter {
     /// Override the auth header name (default: `x-api-key: {key}`).
     /// When set (e.g. `"api-key"`), sends `{name}: {key}` instead.
     auth_header_name: Option<String>,
+    /// Optional token store for OAuth/dynamic tokens (overrides `http.api_key`).
+    token_store: Option<Arc<dyn TokenStore>>,
 }
 
 impl Adapter {
@@ -27,7 +32,16 @@ impl Adapter {
             http: super::http_api::HttpApi::new(api_key, DEFAULT_BASE_URL),
             provider_name: "anthropic".to_string(),
             auth_header_name: None,
+            token_store: None,
         }
+    }
+
+    /// Set a token store for dynamic/OAuth token resolution.
+    /// When set, tokens are fetched from the store instead of using the static API key.
+    #[must_use]
+    pub fn with_token_store(mut self, store: Arc<dyn TokenStore>) -> Self {
+        self.token_store = Some(store);
+        self
     }
 
     #[must_use]
@@ -63,6 +77,22 @@ impl Adapter {
         Self {
             http: self.http.with_timeout(timeout),
             ..self
+        }
+    }
+
+    /// Resolve the current API key: use the token store if set, otherwise fall back
+    /// to the static key in `http.api_key`.
+    async fn resolve_api_key(&self) -> Result<String, SdkError> {
+        if let Some(store) = &self.token_store {
+            store
+                .get_token()
+                .await
+                .map_err(|e| SdkError::Configuration {
+                    message: format!("token store error: {e}"),
+                    source: None,
+                })
+        } else {
+            Ok(self.http.api_key.clone())
         }
     }
 
@@ -1072,6 +1102,7 @@ fn build_api_request(
     adapter: &Adapter,
     request: &Request,
     stream: bool,
+    api_key: &str,
 ) -> (ApiRequest, reqwest::RequestBuilder) {
     let (system, other_messages) = extract_system_prompt(&request.messages);
     let mut api_messages = translate_messages(&other_messages);
@@ -1194,17 +1225,13 @@ fn build_api_request(
     }
 
     if adapter.provider_name == "anthropic" || adapter.auth_header_name.is_some() {
-        let auth_header = adapter
-            .auth_header_name
-            .as_deref()
-            .unwrap_or("x-api-key");
-        req_builder = req_builder.header(auth_header, &adapter.http.api_key);
+        let auth_header = adapter.auth_header_name.as_deref().unwrap_or("x-api-key");
+        req_builder = req_builder.header(auth_header, api_key);
 
         if adapter.provider_name == "anthropic" {
             req_builder = req_builder.header("anthropic-version", "2023-06-01");
 
-            let include_1m_context =
-                model_info.is_some_and(|m| m.context_window() >= 1_000_000);
+            let include_1m_context = model_info.is_some_and(|m| m.context_window() >= 1_000_000);
             if let Some(beta_str) = build_beta_header(
                 request.provider_options.as_ref(),
                 auto_cache,
@@ -1215,7 +1242,7 @@ fn build_api_request(
             }
         }
     } else {
-        req_builder = req_builder.bearer_auth(&adapter.http.api_key);
+        req_builder = req_builder.bearer_auth(api_key);
     }
 
     let req_builder = req_builder.json(&merge_provider_options(
@@ -1242,7 +1269,8 @@ impl ProviderAdapter for Adapter {
             return self.complete_via_stream(request).await;
         }
 
-        let (_api_request, req_builder) = build_api_request(self, request, false);
+        let api_key = self.resolve_api_key().await?;
+        let (_api_request, req_builder) = build_api_request(self, request, false, &api_key);
 
         let mut req = req_builder;
         if let Some(t) = self.http.request_timeout {
@@ -1311,7 +1339,8 @@ impl ProviderAdapter for Adapter {
         if let Some(tc) = &request.tool_choice {
             crate::provider::validate_tool_choice(self, tc)?;
         }
-        let (_api_request, req_builder) = build_api_request(self, request, true);
+        let api_key = self.resolve_api_key().await?;
+        let (_api_request, req_builder) = build_api_request(self, request, true, &api_key);
 
         let http_resp = req_builder
             .send()
@@ -1712,7 +1741,8 @@ mod tests {
             ..make_base_request()
         };
 
-        let (api_request, _req_builder) = build_api_request(&adapter, &request, false);
+        let (api_request, _req_builder) =
+            build_api_request(&adapter, &request, false, &adapter.http.api_key);
         assert!(
             api_request.system.is_none(),
             "whitespace-only system prompts should be omitted"
@@ -2168,7 +2198,8 @@ mod tests {
             ..make_base_request()
         };
 
-        let (api_request, _req_builder) = build_api_request(&adapter, &request, false);
+        let (api_request, _req_builder) =
+            build_api_request(&adapter, &request, false, &adapter.http.api_key);
         assert_eq!(
             api_request.output_config,
             Some(serde_json::json!({"effort": "medium"}))
@@ -2180,7 +2211,8 @@ mod tests {
         let adapter = Adapter::new("test-key");
         let request = make_base_request();
 
-        let (api_request, _req_builder) = build_api_request(&adapter, &request, false);
+        let (api_request, _req_builder) =
+            build_api_request(&adapter, &request, false, &adapter.http.api_key);
         assert!(api_request.output_config.is_none());
     }
 
@@ -2192,7 +2224,8 @@ mod tests {
             ..make_base_request()
         };
 
-        let (api_request, _req_builder) = build_api_request(&adapter, &request, false);
+        let (api_request, _req_builder) =
+            build_api_request(&adapter, &request, false, &adapter.http.api_key);
         assert_eq!(api_request.speed, Some("fast".to_string()));
     }
 
@@ -2204,7 +2237,8 @@ mod tests {
             ..make_base_request()
         };
 
-        let (_api_request, req_builder) = build_api_request(&adapter, &request, false);
+        let (_api_request, req_builder) =
+            build_api_request(&adapter, &request, false, &adapter.http.api_key);
         let built = req_builder.build().expect("should build request");
         let beta = built
             .headers()

@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine};
 use futures::StreamExt;
 
@@ -6,6 +8,7 @@ use crate::provider::{ProviderAdapter, StreamEventStream};
 use crate::providers::common::{
     parse_error_body, parse_rate_limit_headers, parse_retry_after, send_and_read_response,
 };
+use crate::token_store::TokenStore;
 use crate::types::{
     ContentPart, FinishReason, Message, Request, Response, ResponseFormat, ResponseFormatType,
     Role, StreamEvent, ToolCall, ToolChoice, ToolDefinition, Usage,
@@ -23,6 +26,8 @@ pub struct Adapter {
     project_id: Option<String>,
     /// When true, always use streaming (required by the Codex endpoint).
     codex_mode: bool,
+    /// Optional token store for OAuth/dynamic tokens (overrides `http.api_key`).
+    token_store: Option<Arc<dyn TokenStore>>,
 }
 
 impl Adapter {
@@ -33,7 +38,16 @@ impl Adapter {
             org_id: None,
             project_id: None,
             codex_mode: false,
+            token_store: None,
         }
+    }
+
+    /// Set a token store for dynamic/OAuth token resolution.
+    /// When set, tokens are fetched from the store instead of using the static API key.
+    #[must_use]
+    pub fn with_token_store(mut self, store: Arc<dyn TokenStore>) -> Self {
+        self.token_store = Some(store);
+        self
     }
 
     #[must_use]
@@ -76,14 +90,30 @@ impl Adapter {
         }
     }
 
+    /// Resolve the current API key: use the token store if set, otherwise fall back
+    /// to the static key in `http.api_key`.
+    async fn resolve_api_key(&self) -> Result<String, SdkError> {
+        if let Some(store) = &self.token_store {
+            store
+                .get_token()
+                .await
+                .map_err(|e| SdkError::Configuration {
+                    message: format!("token store error: {e}"),
+                    source: None,
+                })
+        } else {
+            Ok(self.http.api_key.clone())
+        }
+    }
+
     /// Build a `reqwest::RequestBuilder` with default headers, org/project headers, and auth.
-    fn build_request(&self, url: &str) -> reqwest::RequestBuilder {
+    fn build_request(&self, url: &str, api_key: &str) -> reqwest::RequestBuilder {
         let mut req = self.http.client.post(url);
         // Apply default_headers first so adapter-specific headers can override
         for (key, value) in &self.http.default_headers {
             req = req.header(key, value);
         }
-        req = req.bearer_auth(&self.http.api_key);
+        req = req.bearer_auth(api_key);
         if let Some(org_id) = &self.org_id {
             req = req.header("OpenAI-Organization", org_id);
         }
@@ -948,8 +978,9 @@ impl ProviderAdapter for Adapter {
         }
         let request_body = build_request_body(request, false, false);
         let url = format!("{}/responses", self.http.base_url);
+        let api_key = self.resolve_api_key().await?;
 
-        let mut req = self.build_request(&url).json(&request_body);
+        let mut req = self.build_request(&url, &api_key).json(&request_body);
         if let Some(t) = self.http.request_timeout {
             req = req.timeout(t);
         }
@@ -1003,9 +1034,10 @@ impl ProviderAdapter for Adapter {
         }
         let request_body = build_request_body(request, true, self.codex_mode);
         let url = format!("{}/responses", self.http.base_url);
+        let api_key = self.resolve_api_key().await?;
 
         let http_resp = self
-            .build_request(&url)
+            .build_request(&url, &api_key)
             .json(&request_body)
             .send()
             .await

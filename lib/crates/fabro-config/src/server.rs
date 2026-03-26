@@ -9,6 +9,7 @@ use crate::run::RunDefaults;
 pub enum AuthProvider {
     #[default]
     Github,
+    Google,
     InsecureDisabled,
 }
 
@@ -18,6 +19,7 @@ pub struct AuthConfig {
     pub provider: AuthProvider,
     #[serde(default)]
     pub allowed_usernames: Vec<String>,
+    pub google_client_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Serialize)]
@@ -62,6 +64,7 @@ impl Default for ApiConfig {
 pub enum GitProvider {
     #[default]
     Github,
+    AzureDevops,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, PartialEq, Serialize)]
@@ -88,6 +91,9 @@ pub struct GitConfig {
     pub app_id: Option<String>,
     pub client_id: Option<String>,
     pub slug: Option<String>,
+    pub ado_org_url: Option<String>,
+    pub ado_pat: Option<String>,
+    pub ado_default_project: Option<String>,
     #[serde(default)]
     pub author: GitAuthorConfig,
     pub webhooks: Option<WebhookConfig>,

@@ -584,6 +584,7 @@ pub struct WebStatus {
 fn format_auth_provider(provider: &AuthProvider) -> &'static str {
     match provider {
         AuthProvider::Github => "github",
+        AuthProvider::Google => "google",
         AuthProvider::InsecureDisabled => "insecure_disabled",
     }
 }

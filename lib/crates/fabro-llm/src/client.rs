@@ -1,7 +1,9 @@
+use crate::auth_profiles;
 use crate::error::SdkError;
 use crate::middleware::{Middleware, NextFn, NextStreamFn};
 use crate::provider::{ProviderAdapter, StreamEventStream};
 use crate::providers;
+use crate::token_store;
 use crate::types::{Request, Response};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -53,6 +55,14 @@ impl Client {
             }
             client.register_provider(Arc::new(adapter)).await?;
         }
+        // Check for Anthropic OAuth token (from OpenClaw auth profiles)
+        if std::env::var("ANTHROPIC_API_KEY").is_err() {
+            if let Some(token) = auth_profiles::load_anthropic_token() {
+                let adapter = providers::AnthropicAdapter::new(token);
+                // Anthropic OAuth tokens are static bearers (sk-ant-oat01-...), no refresh needed
+                client.register_provider(Arc::new(adapter)).await?;
+            }
+        }
         if let Ok(key) = std::env::var("OPENAI_API_KEY") {
             let mut adapter = providers::OpenAiAdapter::new(key);
             if let Ok(account_id) = std::env::var("CHATGPT_ACCOUNT_ID") {
@@ -74,6 +84,30 @@ impl Client {
                 adapter = adapter.with_project_id(project_id);
             }
             client.register_provider(Arc::new(adapter)).await?;
+        }
+        // Check for Codex OAuth credentials (from OpenClaw auth profiles)
+        if std::env::var("OPENAI_API_KEY").is_err() {
+            if let Some(codex_creds) = auth_profiles::load_codex_oauth() {
+                let token_store = Arc::new(token_store::OAuthTokenStore::new(
+                    token_store::OAuthTokenConfig {
+                        access_token: codex_creds.access_token,
+                        refresh_token: codex_creds.refresh_token,
+                        expires_at: codex_creds.expires_at,
+                        issuer: "https://auth.openai.com".to_string(),
+                        client_id: fabro_openai_oauth::DEFAULT_CLIENT_ID.to_string(),
+                        provider_name: "openai-codex".to_string(),
+                    },
+                ));
+                let mut adapter = providers::OpenAiAdapter::new("placeholder".to_string())
+                    .with_token_store(token_store)
+                    .with_base_url("https://chatgpt.com/backend-api/codex")
+                    .with_codex_mode();
+                let mut headers = std::collections::HashMap::new();
+                headers.insert("ChatGPT-Account-Id".to_string(), codex_creds.account_id);
+                headers.insert("originator".to_string(), "fabro".to_string());
+                adapter = adapter.with_default_headers(headers);
+                client.register_provider(Arc::new(adapter)).await?;
+            }
         }
         if let Ok(key) =
             std::env::var("GEMINI_API_KEY").or_else(|_| std::env::var("GOOGLE_API_KEY"))
@@ -121,10 +155,9 @@ impl Client {
         // Azure OpenAI Foundry
         if let Ok(base_url) = std::env::var("AZURE_OPENAI_BASE_URL") {
             if let Ok(key) = std::env::var("AZURE_OPENAI_API_KEY") {
-                let adapter =
-                    providers::OpenAiCompatibleAdapter::new(key, &base_url)
-                        .with_name("azure-openai")
-                        .with_auth_header("api-key");
+                let adapter = providers::OpenAiCompatibleAdapter::new(key, &base_url)
+                    .with_name("azure-openai")
+                    .with_auth_header("api-key");
                 client.register_provider(Arc::new(adapter)).await?;
             }
         }

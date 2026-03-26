@@ -4,8 +4,9 @@ import { join } from "node:path";
 import { parse } from "smol-toml";
 
 interface AuthConfig {
-  provider: "github" | "tailscale" | "insecure_disabled";
+  provider: "github" | "google" | "tailscale" | "insecure_disabled";
   allowed_usernames: string[];
+  google_client_id?: string;
 }
 
 interface ApiConfig {

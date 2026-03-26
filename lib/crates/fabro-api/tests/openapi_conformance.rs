@@ -247,6 +247,7 @@ fn fully_populated_server_config() -> ServerConfig {
             auth: AuthConfig {
                 provider: AuthProvider::Github,
                 allowed_usernames: vec!["user".into()],
+                google_client_id: None,
             },
         },
         api: ApiConfig {
@@ -263,6 +264,9 @@ fn fully_populated_server_config() -> ServerConfig {
             app_id: Some("123".into()),
             client_id: Some("456".into()),
             slug: Some("fabro".into()),
+            ado_org_url: None,
+            ado_pat: None,
+            ado_default_project: None,
             author: GitAuthorConfig {
                 name: Some("bot".into()),
                 email: Some("bot@x".into()),

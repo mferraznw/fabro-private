@@ -26,6 +26,7 @@ import { useTheme } from "../lib/theme";
 import { getAppConfig } from "../lib/config.server";
 import { isDemoMode, demoCookieHeader } from "../lib/demo-mode.server";
 import { isGitHubAppConfigured } from "../lib/github.server";
+import { isGoogleOAuthConfigured } from "../lib/google.server";
 import { requireUser } from "../lib/session.server";
 import type { Route } from "./+types/app-shell";
 
@@ -45,6 +46,9 @@ export async function loader({ request }: Route.LoaderArgs) {
     return { user: DEMO_USER, demoMode, features: config.features };
   }
   if (provider === "github" && !isGitHubAppConfigured()) {
+    throw redirect("/setup");
+  }
+  if (provider === "google" && !isGoogleOAuthConfigured()) {
     throw redirect("/setup");
   }
   const user = await requireUser(request);

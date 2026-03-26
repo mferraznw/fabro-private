@@ -3247,6 +3247,7 @@ mod settings {
                 auth: AuthConfig {
                     provider: AuthProvider::Github,
                     allowed_usernames: vec!["brynary".into(), "alice".into()],
+                    google_client_id: None,
                 },
             },
             api: ApiConfig {
@@ -3259,6 +3260,9 @@ mod settings {
                 app_id: Some("12345".into()),
                 client_id: Some("Iv1.abc123".into()),
                 slug: Some("fabro-dev".into()),
+                ado_org_url: None,
+                ado_pat: None,
+                ado_default_project: None,
                 author: Default::default(),
                 webhooks: None,
             },

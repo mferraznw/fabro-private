@@ -1220,6 +1220,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "fabro-ado"
+version = "0.176.2"
+dependencies = [
+ "anyhow",
+ "base64",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tracing",
+]
+
+[[package]]
 name = "fabro-agent"
 version = "0.176.2"
 dependencies = [
@@ -1512,6 +1524,7 @@ dependencies = [
  "clap",
  "cli-table",
  "dialoguer",
+ "dirs",
  "dotenvy",
  "fabro-model",
  "fabro-openai-oauth",
