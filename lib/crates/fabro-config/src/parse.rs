@@ -5,7 +5,7 @@ use fabro_types::settings::SettingsLayer;
 const CURRENT_VERSION: u32 = 1;
 
 const ALLOWED_TOP_LEVEL_KEYS: &[&str] = &[
-    "_version", "project", "workflow", "run", "cli", "server", "features",
+    "_version", "project", "workflow", "run", "cli", "server", "features", "llm",
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -26,7 +26,7 @@ impl fmt::Display for ParseError {
                 } else {
                     write!(
                         f,
-                        "unknown top-level settings key `{key}`: expected one of `_version`, `project`, `workflow`, `run`, `cli`, `server`, `features`"
+                        "unknown top-level settings key `{key}`: expected one of `_version`, `project`, `workflow`, `run`, `cli`, `server`, `features`, `llm`"
                     )
                 }
             }
@@ -66,7 +66,7 @@ pub fn parse_settings_layer(input: &str) -> Result<SettingsLayer, ParseError> {
         for key in table.keys() {
             if !ALLOWED_TOP_LEVEL_KEYS.contains(&key.as_str()) {
                 return Err(ParseError::UnknownTopLevelKey {
-                    key:  key.clone(),
+                    key: key.clone(),
                     hint: rename_hint(key),
                 });
             }
@@ -98,7 +98,6 @@ fn rename_hint(key: &str) -> Option<String> {
         "goal" | "goal_file" | "work_dir" | "directory" => "move to `[run]`",
         "graph" => "move to `[workflow]`",
         "labels" => "move to `[run.metadata]`",
-        "llm" => "rename to `[run.model]`",
         "vars" => "rename to `[run.inputs]`",
         "setup" => "rename to `[run.prepare]`",
         "sandbox" => "move under `[run.sandbox]`",

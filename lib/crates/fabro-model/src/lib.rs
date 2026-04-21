@@ -10,7 +10,10 @@ pub use billing::{
     ModelBillingFacts, ModelBillingInput, ModelPricing, ModelPricingPolicy, ModelRef, ModelUsage,
     OpenAiBillingFacts, OpenAiModelPricing, PricePerMTok, Speed, TokenCounts, UsdMicros,
 };
-pub use catalog::{Catalog, FallbackTarget};
+pub use catalog::{
+    Catalog, DiscoveryFuture, DiscoveryPersistMode, DiscoverySettings, FallbackTarget,
+    ModelDiscovery,
+};
 pub use model_ref::ModelHandle;
 pub use provider::Provider;
-pub use types::{Model, ModelCosts, ModelFeatures, ModelLimits};
+pub use types::{Model, ModelCosts, ModelFeatures, ModelLimits, ModelMeta};

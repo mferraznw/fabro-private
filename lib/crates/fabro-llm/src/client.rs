@@ -1,10 +1,12 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use fabro_auth::{ApiCredential, ApiKeyHeader};
 use tracing::debug;
 
 use crate::error::Error;
+use crate::litellm_discovery::LiteLlmDiscovery;
 use crate::middleware::{Middleware, NextFn, NextStreamFn};
 use crate::provider::{ProviderAdapter, StreamEventStream};
 use crate::providers;
@@ -19,9 +21,9 @@ const LITELLM_PROVIDER_NAME: &str = "litellm";
 /// The core client that routes requests to provider adapters (Section 2.2, 3).
 #[derive(Clone)]
 pub struct Client {
-    providers:        HashMap<String, Arc<dyn ProviderAdapter>>,
+    providers: HashMap<String, Arc<dyn ProviderAdapter>>,
     default_provider: Option<String>,
-    middleware:       Vec<Arc<dyn Middleware>>,
+    middleware: Vec<Arc<dyn Middleware>>,
 }
 
 impl Client {
@@ -50,16 +52,16 @@ impl Client {
         let mut credentials = Vec::new();
         if let Ok(key) = std::env::var("ANTHROPIC_API_KEY") {
             credentials.push(ApiCredential {
-                provider:      fabro_model::Provider::Anthropic,
-                auth_header:   ApiKeyHeader::Custom {
-                    name:  "x-api-key".to_string(),
+                provider: fabro_model::Provider::Anthropic,
+                auth_header: ApiKeyHeader::Custom {
+                    name: "x-api-key".to_string(),
                     value: key,
                 },
                 extra_headers: HashMap::new(),
-                base_url:      std::env::var("ANTHROPIC_BASE_URL").ok(),
-                codex_mode:    false,
-                org_id:        None,
-                project_id:    None,
+                base_url: std::env::var("ANTHROPIC_BASE_URL").ok(),
+                codex_mode: false,
+                org_id: None,
+                project_id: None,
             });
         }
         if let Ok(key) = std::env::var("OPENAI_API_KEY") {
@@ -86,57 +88,70 @@ impl Client {
             std::env::var("GEMINI_API_KEY").or_else(|_| std::env::var("GOOGLE_API_KEY"))
         {
             credentials.push(ApiCredential {
-                provider:      fabro_model::Provider::Gemini,
-                auth_header:   ApiKeyHeader::Bearer(key),
+                provider: fabro_model::Provider::Gemini,
+                auth_header: ApiKeyHeader::Bearer(key),
                 extra_headers: HashMap::new(),
-                base_url:      std::env::var("GEMINI_BASE_URL").ok(),
-                codex_mode:    false,
-                org_id:        None,
-                project_id:    None,
+                base_url: std::env::var("GEMINI_BASE_URL").ok(),
+                codex_mode: false,
+                org_id: None,
+                project_id: None,
             });
         }
         if let Ok(key) = std::env::var("KIMI_API_KEY") {
             credentials.push(ApiCredential {
-                provider:      fabro_model::Provider::Kimi,
-                auth_header:   ApiKeyHeader::Bearer(key),
+                provider: fabro_model::Provider::Kimi,
+                auth_header: ApiKeyHeader::Bearer(key),
                 extra_headers: HashMap::new(),
-                base_url:      None,
-                codex_mode:    false,
-                org_id:        None,
-                project_id:    None,
+                base_url: None,
+                codex_mode: false,
+                org_id: None,
+                project_id: None,
             });
         }
         if let Ok(key) = std::env::var("ZAI_API_KEY") {
             credentials.push(ApiCredential {
-                provider:      fabro_model::Provider::Zai,
-                auth_header:   ApiKeyHeader::Bearer(key),
+                provider: fabro_model::Provider::Zai,
+                auth_header: ApiKeyHeader::Bearer(key),
                 extra_headers: HashMap::new(),
-                base_url:      None,
-                codex_mode:    false,
-                org_id:        None,
-                project_id:    None,
+                base_url: None,
+                codex_mode: false,
+                org_id: None,
+                project_id: None,
             });
         }
         if let Ok(key) = std::env::var("MINIMAX_API_KEY") {
             credentials.push(ApiCredential {
-                provider:      fabro_model::Provider::Minimax,
-                auth_header:   ApiKeyHeader::Bearer(key),
+                provider: fabro_model::Provider::Minimax,
+                auth_header: ApiKeyHeader::Bearer(key),
                 extra_headers: HashMap::new(),
-                base_url:      None,
-                codex_mode:    false,
-                org_id:        None,
-                project_id:    None,
+                base_url: None,
+                codex_mode: false,
+                org_id: None,
+                project_id: None,
             });
         }
         if let Ok(key) = std::env::var("INCEPTION_API_KEY") {
             credentials.push(ApiCredential {
-                provider:      fabro_model::Provider::Inception,
-                auth_header:   ApiKeyHeader::Bearer(key),
+                provider: fabro_model::Provider::Inception,
+                auth_header: ApiKeyHeader::Bearer(key),
                 extra_headers: HashMap::new(),
-                base_url:      None,
-                codex_mode:    false,
-                org_id:        None,
-                project_id:    None,
+                base_url: None,
+                codex_mode: false,
+                org_id: None,
+                project_id: None,
+            });
+        }
+        if let Ok(base_url) = std::env::var("LITELLM_BASE_URL") {
+            credentials.push(ApiCredential {
+                provider: fabro_model::Provider::OpenAiCompatible,
+                auth_header: ApiKeyHeader::Bearer(
+                    std::env::var("LITELLM_API_KEY").unwrap_or_else(|_| "none".to_string()),
+                ),
+                extra_headers: HashMap::new(),
+                base_url: Some(base_url),
+                codex_mode: false,
+                org_id: None,
+                project_id: None,
             });
         }
         Self::from_credentials(credentials).await
@@ -149,9 +164,9 @@ impl Client {
     /// Returns `Error` if any provider adapter fails to initialize.
     pub async fn from_credentials(credentials: Vec<ApiCredential>) -> Result<Self, Error> {
         let mut client = Self {
-            providers:        HashMap::new(),
+            providers: HashMap::new(),
             default_provider: None,
-            middleware:       Vec::new(),
+            middleware: Vec::new(),
         };
 
         for credential in credentials {
@@ -253,16 +268,19 @@ impl Client {
                         return Err(Error::Configuration {
                             message: "LITELLM_BASE_URL is required for provider 'litellm'"
                                 .to_string(),
-                            source:  None,
+                            source: None,
                         });
                     };
-                    let mut adapter =
-                        providers::OpenAiCompatibleAdapter::new(auth_value, base_url)
-                            .with_name(LITELLM_PROVIDER_NAME);
+                    let mut adapter = providers::OpenAiCompatibleAdapter::new(
+                        auth_value.clone(),
+                        base_url.clone(),
+                    )
+                    .with_name(LITELLM_PROVIDER_NAME);
                     if !credential.extra_headers.is_empty() {
                         adapter = adapter.with_default_headers(credential.extra_headers);
                     }
                     client.register_provider(Arc::new(adapter)).await?;
+                    register_litellm_discovery(base_url, Some(auth_value));
                 }
             }
         }
@@ -302,7 +320,7 @@ impl Client {
     }
 
     /// Resolve the provider for a request.
-    fn resolve_provider(&self, request: &Request) -> Result<Arc<dyn ProviderAdapter>, Error> {
+    async fn resolve_provider(&self, request: &Request) -> Result<Arc<dyn ProviderAdapter>, Error> {
         if let Some(provider_name) = request.provider.as_deref() {
             for candidate in provider_lookup_candidates(provider_name) {
                 if let Some(provider) = self.providers.get(candidate.as_str()) {
@@ -314,20 +332,35 @@ impl Client {
                     "Provider '{provider_name}' not registered. Registered: {:?}",
                     self.provider_names()
                 ),
-                source:  None,
+                source: None,
             });
         }
 
         let catalog_provider = fabro_model::Catalog::builtin()
-            .get(&request.model)
+            .get_owned(&request.model)
             .map(|info| info.provider.to_string());
+
+        let discovered_provider = if catalog_provider.is_none() {
+            fabro_model::Catalog::builtin()
+                .discover(&request.model)
+                .await
+                .map_err(|message| Error::Configuration {
+                    message: format!("Model discovery failed for '{}': {message}", request.model),
+                    source: None,
+                })?
+                .map(|info| info.provider.to_string())
+        } else {
+            None
+        };
+
+        let catalog_provider = catalog_provider.or(discovered_provider);
 
         let provider_name = catalog_provider
             .as_deref()
             .or(self.default_provider.as_deref())
             .ok_or_else(|| Error::Configuration {
                 message: "No provider specified and no default provider set".into(),
-                source:  None,
+                source: None,
             })?;
 
         for candidate in provider_lookup_candidates(provider_name) {
@@ -341,7 +374,7 @@ impl Client {
                 "Provider '{provider_name}' not registered. Registered: {:?}",
                 self.provider_names()
             ),
-            source:  None,
+            source: None,
         })
     }
 
@@ -353,7 +386,7 @@ impl Client {
     /// registered, or any provider/middleware error encountered during the
     /// request.
     pub async fn complete(&self, request: &Request) -> Result<Response, Error> {
-        let provider = self.resolve_provider(request)?;
+        let provider = self.resolve_provider(request).await?;
 
         if self.middleware.is_empty() {
             return provider.complete(request).await;
@@ -386,7 +419,7 @@ impl Client {
     /// registered, or any provider/middleware error encountered during the
     /// request.
     pub async fn stream(&self, request: &Request) -> Result<StreamEventStream, Error> {
-        let provider = self.resolve_provider(request)?;
+        let provider = self.resolve_provider(request).await?;
 
         if self.middleware.is_empty() {
             return provider.stream(request).await;
@@ -453,6 +486,15 @@ fn provider_lookup_candidates(provider_name: &str) -> Vec<String> {
     }
 }
 
+fn register_litellm_discovery(base_url: String, api_key: Option<String>) {
+    let ttl = std::env::var("FABRO_LLM_DISCOVERY_TTL")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .map_or(Duration::from_secs(3600), Duration::from_secs);
+    fabro_model::Catalog::builtin()
+        .register_discovery(Arc::new(LiteLlmDiscovery::new(base_url, api_key, ttl)));
+}
+
 #[cfg(test)]
 mod tests {
     use futures::stream;
@@ -483,19 +525,19 @@ mod tests {
 
         async fn complete(&self, _request: &Request) -> Result<Response, Error> {
             Ok(Response {
-                id:            "resp_mock".into(),
-                model:         "mock-model".into(),
-                provider:      self.provider_name.clone(),
-                message:       Message::assistant(&self.response_text),
+                id: "resp_mock".into(),
+                model: "mock-model".into(),
+                provider: self.provider_name.clone(),
+                message: Message::assistant(&self.response_text),
                 finish_reason: FinishReason::Stop,
-                usage:         TokenCounts {
+                usage: TokenCounts {
                     input_tokens: 10,
                     output_tokens: 20,
                     ..Default::default()
                 },
-                raw:           None,
-                warnings:      vec![],
-                rate_limit:    None,
+                raw: None,
+                warnings: vec![],
+                rate_limit: None,
             })
         }
 
@@ -526,19 +568,19 @@ mod tests {
 
     fn test_request() -> Request {
         Request {
-            model:            "mock-model".into(),
-            messages:         vec![Message::user("Hello")],
-            provider:         None,
-            tools:            None,
-            tool_choice:      None,
-            response_format:  None,
-            temperature:      None,
-            top_p:            None,
-            max_tokens:       None,
-            stop_sequences:   None,
+            model: "mock-model".into(),
+            messages: vec![Message::user("Hello")],
+            provider: None,
+            tools: None,
+            tool_choice: None,
+            response_format: None,
+            temperature: None,
+            top_p: None,
+            max_tokens: None,
+            stop_sequences: None,
             reasoning_effort: None,
-            speed:            None,
-            metadata:         None,
+            speed: None,
+            metadata: None,
             provider_options: None,
         }
     }
@@ -617,25 +659,25 @@ mod tests {
     async fn from_credentials_registers_multiple_providers() {
         let client = Client::from_credentials(vec![
             ApiCredential {
-                provider:      fabro_model::Provider::Anthropic,
-                auth_header:   ApiKeyHeader::Custom {
-                    name:  "x-api-key".to_string(),
+                provider: fabro_model::Provider::Anthropic,
+                auth_header: ApiKeyHeader::Custom {
+                    name: "x-api-key".to_string(),
                     value: "anthropic-key".to_string(),
                 },
                 extra_headers: HashMap::new(),
-                base_url:      None,
-                codex_mode:    false,
-                org_id:        None,
-                project_id:    None,
+                base_url: None,
+                codex_mode: false,
+                org_id: None,
+                project_id: None,
             },
             ApiCredential {
-                provider:      fabro_model::Provider::OpenAi,
-                auth_header:   ApiKeyHeader::Bearer("openai-key".to_string()),
+                provider: fabro_model::Provider::OpenAi,
+                auth_header: ApiKeyHeader::Bearer("openai-key".to_string()),
                 extra_headers: HashMap::new(),
-                base_url:      None,
-                codex_mode:    false,
-                org_id:        None,
-                project_id:    None,
+                base_url: None,
+                codex_mode: false,
+                org_id: None,
+                project_id: None,
             },
         ])
         .await
@@ -650,13 +692,13 @@ mod tests {
     #[tokio::test]
     async fn from_credentials_supports_openai_compatible_provider_constants() {
         let client = Client::from_credentials(vec![ApiCredential {
-            provider:      fabro_model::Provider::Kimi,
-            auth_header:   ApiKeyHeader::Bearer("kimi-key".to_string()),
+            provider: fabro_model::Provider::Kimi,
+            auth_header: ApiKeyHeader::Bearer("kimi-key".to_string()),
             extra_headers: HashMap::new(),
-            base_url:      None,
-            codex_mode:    false,
-            org_id:        None,
-            project_id:    None,
+            base_url: None,
+            codex_mode: false,
+            org_id: None,
+            project_id: None,
         }])
         .await
         .unwrap();
@@ -668,13 +710,13 @@ mod tests {
     #[tokio::test]
     async fn from_credentials_registers_litellm_adapter() {
         let client = Client::from_credentials(vec![ApiCredential {
-            provider:      fabro_model::Provider::OpenAiCompatible,
-            auth_header:   ApiKeyHeader::Bearer("litellm-key".to_string()),
+            provider: fabro_model::Provider::OpenAiCompatible,
+            auth_header: ApiKeyHeader::Bearer("litellm-key".to_string()),
             extra_headers: HashMap::new(),
-            base_url:      Some("http://localhost:4000/v1".to_string()),
-            codex_mode:    false,
-            org_id:        None,
-            project_id:    None,
+            base_url: Some("http://localhost:4000/v1".to_string()),
+            codex_mode: false,
+            org_id: None,
+            project_id: None,
         }])
         .await
         .unwrap();

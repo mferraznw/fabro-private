@@ -20,7 +20,9 @@ fn help() {
       -p, --provider <PROVIDER>  Filter by provider
           --no-upgrade-check     Disable automatic upgrade check [env: FABRO_NO_UPGRADE_CHECK=true]
       -q, --query <QUERY>        Search for models matching this string
+          --discovered           List models persisted by runtime discovery
           --quiet                Suppress non-essential output [env: FABRO_QUIET=]
+          --source <SOURCE>      Filter by model source (for v1, supports \"litellm\")
           --verbose              Enable verbose output [env: FABRO_VERBOSE=]
       -h, --help                 Print help
     ----- stderr -----

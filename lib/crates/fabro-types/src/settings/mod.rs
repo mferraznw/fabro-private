@@ -14,6 +14,7 @@ pub mod duration;
 pub mod features;
 pub mod interp;
 pub mod layer;
+pub mod llm;
 pub mod model_ref;
 pub mod project;
 pub mod resolved;
@@ -32,6 +33,7 @@ pub use duration::{Duration, ParseDurationError};
 pub use features::{FeaturesLayer, FeaturesSettings};
 pub use interp::{InterpString, Provenance, ResolveEnvError, Resolved};
 pub use layer::SettingsLayer;
+pub use llm::{LlmDiscoveryLayer, LlmLayer, LlmLiteLlmLayer};
 pub use model_ref::{
     AmbiguousModelRef, ModelRef, ModelRegistry, ParseModelRefError, ResolvedModelRef,
 };

@@ -15,9 +15,11 @@ fn help() {
     Usage: fabro model [OPTIONS] [COMMAND]
 
     Commands:
-      list  List available models
-      test  Test model availability by sending a simple prompt
-      help  Print this message or the help of the given subcommand(s)
+      list      List available models
+      test      Test model availability by sending a simple prompt
+      discover  Discover model metadata through LiteLLM
+      forget    Remove a runtime-discovered model
+      help      Print this message or the help of the given subcommand(s)
 
     Options:
           --json              Output as JSON [env: FABRO_JSON=]

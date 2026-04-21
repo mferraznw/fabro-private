@@ -1,7 +1,11 @@
+use std::path::{Path, PathBuf};
+use std::time::Duration;
+
 use anyhow::{Context, Result, bail};
 use cli_table::format::{Border, Justify, Separator};
 use cli_table::{Cell, CellStruct, Color, Style, Table};
 use fabro_api::{self, types as api_types};
+use fabro_llm::litellm_discovery::{LiteLlmDiscovery, LiteLlmModelsCache};
 use fabro_model::{Catalog, Model, Provider};
 use fabro_types::settings::CliSettings;
 use fabro_types::settings::cli::{CliLayer, OutputFormat};
@@ -10,7 +14,9 @@ use fabro_util::terminal::Styles;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
-use crate::args::{ModelListArgs, ModelTestArgs, ModelsCommand};
+use crate::args::{
+    ModelDiscoverArgs, ModelForgetArgs, ModelListArgs, ModelTestArgs, ModelsCommand,
+};
 use crate::command_context::CommandContext;
 use crate::server_client;
 
@@ -24,21 +30,21 @@ enum ModelTestResultKind {
 
 #[derive(Serialize)]
 struct ModelTestRow {
-    model:    String,
+    model: String,
     provider: Provider,
-    result:   ModelTestResultKind,
+    result: ModelTestResultKind,
     #[serde(skip_serializing_if = "Option::is_none")]
-    detail:   Option<String>,
+    detail: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    error:    Option<String>,
+    error: Option<String>,
 }
 
 #[derive(Serialize)]
 struct ModelTestOutput {
-    results:  Vec<ModelTestRow>,
-    total:    usize,
+    results: Vec<ModelTestRow>,
+    total: usize,
     failures: u32,
-    skipped:  u32,
+    skipped: u32,
 }
 
 pub(crate) async fn execute(
@@ -48,9 +54,16 @@ pub(crate) async fn execute(
     printer: Printer,
 ) -> Result<()> {
     let command = command.unwrap_or_default();
+    if matches!(
+        command,
+        ModelsCommand::Discover(_) | ModelsCommand::Forget(_)
+    ) {
+        return run_local_models(command, cli.output.format == OutputFormat::Json).await;
+    }
     let target_args = match &command {
         ModelsCommand::List(args) => &args.target,
         ModelsCommand::Test(args) => &args.target,
+        ModelsCommand::Discover(_) | ModelsCommand::Forget(_) => unreachable!(),
     };
     let ctx = CommandContext::for_target(target_args, printer, cli.clone(), cli_layer)?;
     let server = ctx.server().await?;
@@ -61,6 +74,113 @@ pub(crate) async fn execute(
         cli.output.format == OutputFormat::Json,
     )
     .await
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Default)]
+struct DiscoveredModelsFile {
+    models: Vec<Model>,
+}
+
+fn discovered_models_path() -> PathBuf {
+    std::env::current_dir()
+        .unwrap_or_else(|_| PathBuf::from("."))
+        .join(".fabro/models.discovered.toml")
+}
+
+fn read_discovered_models(path: &Path) -> Result<Vec<Model>> {
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let text = std::fs::read_to_string(path)?;
+    let parsed: DiscoveredModelsFile = toml::from_str(&text)?;
+    Ok(parsed.models)
+}
+
+fn write_discovered_models(path: &Path, models: &[Model]) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let payload = toml::to_string_pretty(&DiscoveredModelsFile {
+        models: models.to_vec(),
+    })?;
+    std::fs::write(path, payload)?;
+    Ok(())
+}
+
+fn litellm_cache_from_env() -> Result<LiteLlmModelsCache> {
+    let base_url = std::env::var("LITELLM_BASE_URL").context("LITELLM_BASE_URL is required")?;
+    let api_key = std::env::var("LITELLM_API_KEY").ok();
+    Ok(LiteLlmModelsCache::new(
+        base_url,
+        api_key,
+        Duration::from_secs(60),
+    ))
+}
+
+async fn run_local_models(command: ModelsCommand, json_output: bool) -> Result<()> {
+    match command {
+        ModelsCommand::Discover(args) => discover_models(args, json_output).await,
+        ModelsCommand::Forget(args) => forget_model(&args, json_output),
+        ModelsCommand::List(_) | ModelsCommand::Test(_) => unreachable!(),
+    }
+}
+
+#[allow(clippy::print_stdout)]
+async fn discover_models(args: ModelDiscoverArgs, json_output: bool) -> Result<()> {
+    let cache = litellm_cache_from_env()?;
+    let path = discovered_models_path();
+    let mut models = read_discovered_models(&path)?;
+
+    let discovered = if args.all {
+        cache.models().await.map_err(anyhow::Error::msg)?
+    } else {
+        let id = args
+            .id
+            .as_deref()
+            .context("model id is required unless --all is set")?;
+        let discovery = LiteLlmDiscovery::with_cache(cache);
+        match discovery
+            .discover_model(id)
+            .await
+            .map_err(anyhow::Error::msg)?
+        {
+            Some(model) => vec![model],
+            None => bail!("LiteLLM did not expose model '{id}'"),
+        }
+    };
+
+    for model in discovered {
+        models.retain(|existing| existing.id != model.id);
+        models.push(model);
+    }
+    models.sort_by(|a, b| a.id.cmp(&b.id));
+    write_discovered_models(&path, &models)?;
+
+    if json_output {
+        println!("{}", serde_json::to_string_pretty(&models)?);
+    } else {
+        println!("Discovered {} model(s)", models.len());
+    }
+    Ok(())
+}
+
+#[allow(clippy::print_stdout)]
+fn forget_model(args: &ModelForgetArgs, json_output: bool) -> Result<()> {
+    let path = discovered_models_path();
+    let mut models = read_discovered_models(&path)?;
+    let before = models.len();
+    models.retain(|model| model.id != args.id);
+    write_discovered_models(&path, &models)?;
+    let removed = before - models.len();
+    if json_output {
+        println!(
+            "{}",
+            serde_json::json!({ "removed": removed, "id": args.id })
+        );
+    } else {
+        println!("Removed {removed} model(s)");
+    }
+    Ok(())
 }
 
 fn format_context_window(tokens: i64) -> String {
@@ -159,25 +279,25 @@ fn model_test_row_from_status(model: &Model, status: &str, result_color: Color) 
     let trimmed = status.trim();
     match result_color {
         Color::Green => ModelTestRow {
-            model:    model.id.clone(),
+            model: model.id.clone(),
             provider: model.provider,
-            result:   ModelTestResultKind::Pass,
-            detail:   None,
-            error:    None,
+            result: ModelTestResultKind::Pass,
+            detail: None,
+            error: None,
         },
         Color::Yellow => ModelTestRow {
-            model:    model.id.clone(),
+            model: model.id.clone(),
             provider: model.provider,
-            result:   ModelTestResultKind::Skip,
-            detail:   Some(trimmed.to_string()),
-            error:    None,
+            result: ModelTestResultKind::Skip,
+            detail: Some(trimmed.to_string()),
+            error: None,
         },
         _ => ModelTestRow {
-            model:    model.id.clone(),
+            model: model.id.clone(),
             provider: model.provider,
-            result:   ModelTestResultKind::Fail,
-            detail:   None,
-            error:    Some(
+            result: ModelTestResultKind::Fail,
+            detail: None,
+            error: Some(
                 trimmed
                     .strip_prefix("error: ")
                     .unwrap_or(trimmed)
@@ -421,10 +541,37 @@ async fn run_models(
 
     match command {
         ModelsCommand::List(ModelListArgs {
-            provider, query, ..
+            provider,
+            query,
+            discovered,
+            source,
+            ..
         }) => {
-            let models =
-                fetch_models_from_server(client, provider.as_deref(), query.as_deref()).await?;
+            let models = if discovered {
+                let source = source.as_deref();
+                read_discovered_models(&discovered_models_path())?
+                    .into_iter()
+                    .filter(|_| source.is_none_or(|source| source == "litellm"))
+                    .filter(|model| {
+                        provider
+                            .as_deref()
+                            .is_none_or(|provider| model.provider.to_string() == provider)
+                    })
+                    .filter(|model| {
+                        query.as_ref().is_none_or(|query| {
+                            let query = query.to_lowercase();
+                            model.id.to_lowercase().contains(&query)
+                                || model.display_name.to_lowercase().contains(&query)
+                        })
+                    })
+                    .collect()
+            } else {
+                let provider = source
+                    .as_deref()
+                    .filter(|source| *source == "litellm")
+                    .map_or(provider.as_deref(), |_| Some("litellm"));
+                fetch_models_from_server(client, provider, query.as_deref()).await?
+            };
 
             if json_output {
                 println!("{}", serde_json::to_string_pretty(&models)?);
@@ -448,6 +595,7 @@ async fn run_models(
             )
             .await?;
         }
+        ModelsCommand::Discover(_) | ModelsCommand::Forget(_) => unreachable!(),
     }
 
     Ok(())
@@ -477,19 +625,19 @@ mod tests {
             display_name: format!("{id} display"),
             limits: ModelLimits {
                 context_window: 128_000,
-                max_output:     Some(4096),
+                max_output: Some(4096),
             },
             training: None,
             knowledge_cutoff: None,
             features: ModelFeatures {
-                tools:     true,
-                vision:    false,
+                tools: true,
+                vision: false,
                 reasoning: false,
-                effort:    false,
+                effort: false,
             },
             costs: ModelCosts {
-                input_cost_per_mtok:       Some(1.0),
-                output_cost_per_mtok:      Some(2.0),
+                input_cost_per_mtok: Some(1.0),
+                output_cost_per_mtok: Some(2.0),
                 cache_input_cost_per_mtok: None,
             },
             estimated_output_tps: Some(100.0),

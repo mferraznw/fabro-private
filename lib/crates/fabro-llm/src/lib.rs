@@ -1,6 +1,8 @@
 pub mod client;
 pub mod error;
+pub mod fallback;
 pub mod generate;
+pub mod litellm_discovery;
 pub mod middleware;
 pub mod model_test;
 pub mod provider;

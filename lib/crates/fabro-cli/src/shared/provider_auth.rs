@@ -32,7 +32,7 @@ pub(crate) fn provider_key_url(provider: Provider) -> &'static str {
             "https://platform.minimaxi.com/user-center/basic-information/interface-key"
         }
         Provider::Inception => "https://console.inceptionlabs.ai/api-keys",
-        Provider::OpenAiCompatible => "",
+        Provider::OpenAiCompatible => "https://docs.litellm.ai/docs/proxy/quick_start",
     }
 }
 
@@ -71,7 +71,7 @@ pub(crate) enum ApiKeySource {
 pub(crate) async fn validate_api_key(provider: Provider, api_key: &str) -> Result<(), String> {
     let auth_header = if provider == Provider::Anthropic {
         ApiKeyHeader::Custom {
-            name:  "x-api-key".to_string(),
+            name: "x-api-key".to_string(),
             value: api_key.to_string(),
         }
     } else {

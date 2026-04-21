@@ -1,21 +1,108 @@
 use std::collections::HashMap;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::LazyLock;
+use std::sync::{Arc, RwLock};
+use std::time::{Duration, Instant};
 
 use crate::provider::Provider;
-use crate::types::Model;
+use crate::types::{Model, ModelMeta};
 
 /// Global singleton catalog parsed from embedded catalog.json.
 static GLOBAL_CATALOG: LazyLock<Catalog> = LazyLock::new(|| {
     let models: Vec<Model> = serde_json::from_str(include_str!("catalog.json"))
         .expect("embedded catalog.json must be valid");
-    Catalog { models }
+    Catalog::from_models(models)
 });
 
 /// A resolved fallback target: provider name + model ID.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FallbackTarget {
     pub provider: String,
-    pub model:    String,
+    pub model: String,
+}
+
+pub type DiscoveryFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<Option<ModelMeta>, String>> + Send + 'a>>;
+
+pub trait ModelDiscovery: Send + Sync {
+    fn discover<'a>(&'a self, id: &'a str) -> DiscoveryFuture<'a>;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DiscoveryPersistMode {
+    Off,
+    Session,
+    Project,
+}
+
+impl DiscoveryPersistMode {
+    #[must_use]
+    pub fn from_env() -> Self {
+        match std::env::var("FABRO_LLM_DISCOVERY")
+            .unwrap_or_else(|_| "session".to_string())
+            .to_ascii_lowercase()
+            .as_str()
+        {
+            "off" => Self::Off,
+            "project" => Self::Project,
+            _ => Self::Session,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct DiscoverySettings {
+    pub enabled: bool,
+    pub persist: DiscoveryPersistMode,
+    pub ttl: Duration,
+    pub rate_limit_window: Duration,
+    pub deny: Vec<String>,
+}
+
+impl DiscoverySettings {
+    #[must_use]
+    pub fn from_env() -> Self {
+        let persist = DiscoveryPersistMode::from_env();
+        let ttl = std::env::var("FABRO_LLM_DISCOVERY_TTL")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .map_or(Duration::from_secs(3600), Duration::from_secs);
+        let deny = std::env::var("FABRO_LLM_DISCOVERY_DENY")
+            .ok()
+            .map(|value| {
+                value
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default();
+        Self {
+            enabled: std::env::var("FABRO_LLM_DISCOVERY").map_or_else(
+                |_| std::env::var("LITELLM_BASE_URL").is_ok(),
+                |value| value != "off",
+            ),
+            persist,
+            ttl,
+            rate_limit_window: Duration::from_secs(60),
+            deny,
+        }
+    }
+}
+
+impl Default for DiscoverySettings {
+    fn default() -> Self {
+        Self::from_env()
+    }
+}
+
+#[derive(Clone)]
+struct DiscoveredEntry {
+    model: ModelMeta,
+    discovered: Instant,
+    ttl: Duration,
 }
 
 /// Typed model catalog backed by a `Vec<Model>`.
@@ -24,6 +111,10 @@ pub struct FallbackTarget {
 /// [`Catalog::from_models()`] for testing with custom model sets.
 pub struct Catalog {
     models: Vec<Model>,
+    discovered: RwLock<HashMap<String, DiscoveredEntry>>,
+    discoveries: RwLock<Vec<Arc<dyn ModelDiscovery>>>,
+    probes: RwLock<HashMap<String, Instant>>,
+    settings: RwLock<DiscoverySettings>,
 }
 
 impl Catalog {
@@ -37,7 +128,13 @@ impl Catalog {
     /// Create a catalog from a custom set of models (useful for testing).
     #[must_use]
     pub fn from_models(models: Vec<Model>) -> Self {
-        Self { models }
+        Self {
+            models,
+            discovered: RwLock::new(HashMap::new()),
+            discoveries: RwLock::new(Vec::new()),
+            probes: RwLock::new(HashMap::new()),
+            settings: RwLock::new(DiscoverySettings::default()),
+        }
     }
 
     /// Look up a model by ID or alias.
@@ -48,6 +145,128 @@ impl Catalog {
             .find(|m| m.id == id || m.aliases.iter().any(|a| a == id))
     }
 
+    /// Look up a model by ID or alias, including runtime-discovered entries.
+    #[must_use]
+    pub fn get_owned(&self, id: &str) -> Option<ModelMeta> {
+        if let Some(model) = self.get(id) {
+            return Some(model.clone());
+        }
+        let now = Instant::now();
+        self.discovered
+            .read()
+            .expect("catalog discovered lock poisoned")
+            .get(id)
+            .filter(|entry| now.duration_since(entry.discovered) <= entry.ttl)
+            .map(|entry| entry.model.clone())
+    }
+
+    pub fn set_discovery_settings(&self, settings: DiscoverySettings) {
+        *self
+            .settings
+            .write()
+            .expect("catalog settings lock poisoned") = settings;
+    }
+
+    pub fn clear_discovered(&self) {
+        self.discovered
+            .write()
+            .expect("catalog discovered lock poisoned")
+            .clear();
+    }
+
+    pub fn insert_discovered(&self, model: ModelMeta) {
+        let ttl = self
+            .settings
+            .read()
+            .expect("catalog settings lock poisoned")
+            .ttl;
+        self.insert_discovered_with_ttl(model, ttl);
+    }
+
+    fn insert_discovered_with_ttl(&self, model: ModelMeta, ttl: Duration) {
+        self.discovered
+            .write()
+            .expect("catalog discovered lock poisoned")
+            .insert(
+                model.id.clone(),
+                DiscoveredEntry {
+                    model,
+                    discovered: Instant::now(),
+                    ttl,
+                },
+            );
+    }
+
+    pub fn register_discovery(&self, discovery: Arc<dyn ModelDiscovery>) {
+        self.discoveries
+            .write()
+            .expect("catalog discoveries lock poisoned")
+            .push(discovery);
+    }
+
+    #[must_use]
+    pub fn list_discovered(&self) -> Vec<ModelMeta> {
+        let now = Instant::now();
+        let mut models = self
+            .discovered
+            .read()
+            .expect("catalog discovered lock poisoned")
+            .values()
+            .filter(|entry| now.duration_since(entry.discovered) <= entry.ttl)
+            .map(|entry| entry.model.clone())
+            .collect::<Vec<_>>();
+        models.sort_by(|a, b| a.id.cmp(&b.id));
+        models
+    }
+
+    pub async fn discover(&self, id: &str) -> Result<Option<ModelMeta>, String> {
+        if let Some(model) = self.get_owned(id) {
+            return Ok(Some(model));
+        }
+        let settings = self
+            .settings
+            .read()
+            .expect("catalog settings lock poisoned")
+            .clone();
+        if !settings.enabled || settings.persist == DiscoveryPersistMode::Off {
+            return Ok(None);
+        }
+        if settings
+            .deny
+            .iter()
+            .any(|pattern| glob_matches(pattern, id))
+        {
+            return Ok(None);
+        }
+        if self.rate_limited(id, settings.rate_limit_window) {
+            return Ok(None);
+        }
+        let discoveries = self
+            .discoveries
+            .read()
+            .expect("catalog discoveries lock poisoned")
+            .clone();
+        for discovery in discoveries {
+            if let Some(model) = discovery.discover(id).await? {
+                self.insert_discovered_with_ttl(model.clone(), settings.ttl);
+                return Ok(Some(model));
+            }
+        }
+        Ok(None)
+    }
+
+    fn rate_limited(&self, id: &str, window: Duration) -> bool {
+        let now = Instant::now();
+        let mut probes = self.probes.write().expect("catalog probes lock poisoned");
+        if let Some(last) = probes.get(id) {
+            if now.duration_since(*last) < window {
+                return true;
+            }
+        }
+        probes.insert(id.to_string(), now);
+        false
+    }
+
     /// List all models, optionally filtered by provider.
     #[must_use]
     pub fn list(&self, provider: Option<Provider>) -> Vec<&Model> {
@@ -55,6 +274,18 @@ impl Catalog {
             None => self.models.iter().collect(),
             Some(p) => self.models.iter().filter(|m| m.provider == p).collect(),
         }
+    }
+
+    /// List models including the runtime-discovered layer.
+    #[must_use]
+    pub fn list_owned(&self, provider: Option<Provider>) -> Vec<ModelMeta> {
+        let mut models = self.list(provider).into_iter().cloned().collect::<Vec<_>>();
+        models.extend(
+            self.list_discovered()
+                .into_iter()
+                .filter(|model| provider.is_none_or(|provider| model.provider == provider)),
+        );
+        models
     }
 
     /// The overall default model (first model marked `default` in catalog).
@@ -162,19 +393,103 @@ impl Catalog {
                 let provider = provider_str.parse::<Provider>().ok()?;
                 self.closest(provider, reference).map(|m| FallbackTarget {
                     provider: provider_str.clone(),
-                    model:    m.id.clone(),
+                    model: m.id.clone(),
                 })
             })
             .collect()
     }
 }
 
+fn glob_matches(pattern: &str, value: &str) -> bool {
+    if pattern == "*" {
+        return true;
+    }
+    let parts = pattern.split('*').collect::<Vec<_>>();
+    if parts.len() == 1 {
+        return pattern == value;
+    }
+    let mut remainder = value;
+    if let Some(first) = parts.first().filter(|first| !first.is_empty()) {
+        let Some(stripped) = remainder.strip_prefix(first) else {
+            return false;
+        };
+        remainder = stripped;
+    }
+    for part in parts
+        .iter()
+        .skip(1)
+        .take(parts.len().saturating_sub(2))
+        .filter(|part| !part.is_empty())
+    {
+        let Some(index) = remainder.find(part) else {
+            return false;
+        };
+        remainder = &remainder[index + part.len()..];
+    }
+    if let Some(last) = parts.last().filter(|last| !last.is_empty()) {
+        return remainder.ends_with(last);
+    }
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use std::str::FromStr;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::*;
     use crate::provider::Provider;
+    use crate::types::{ModelCosts, ModelFeatures, ModelLimits};
+
+    struct MockDiscovery {
+        calls: AtomicUsize,
+    }
+
+    impl MockDiscovery {
+        fn new() -> Self {
+            Self {
+                calls: AtomicUsize::new(0),
+            }
+        }
+    }
+
+    impl ModelDiscovery for MockDiscovery {
+        fn discover<'a>(&'a self, id: &'a str) -> DiscoveryFuture<'a> {
+            Box::pin(async move {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                Ok((id == "litellm/custom").then(|| test_model(id, Provider::OpenAiCompatible)))
+            })
+        }
+    }
+
+    fn test_model(id: &str, provider: Provider) -> Model {
+        Model {
+            id: id.to_string(),
+            provider,
+            family: "test".to_string(),
+            display_name: id.to_string(),
+            limits: ModelLimits {
+                context_window: 1000,
+                max_output: Some(100),
+            },
+            training: None,
+            knowledge_cutoff: None,
+            features: ModelFeatures {
+                tools: true,
+                vision: false,
+                reasoning: false,
+                effort: false,
+            },
+            costs: ModelCosts {
+                input_cost_per_mtok: Some(1.0),
+                output_cost_per_mtok: Some(2.0),
+                cache_input_cost_per_mtok: None,
+            },
+            estimated_output_tps: None,
+            aliases: Vec::new(),
+            default: false,
+        }
+    }
 
     // ---- Catalog struct tests ----
 
@@ -213,6 +528,58 @@ mod tests {
         // OpenAiCompatible has no catalog models
         let models = Catalog::builtin().list(Some(Provider::OpenAiCompatible));
         assert!(models.is_empty());
+    }
+
+    #[tokio::test]
+    async fn runtime_discovery_static_then_discovered_then_probe() {
+        let catalog = Catalog::from_models(vec![test_model("static", Provider::OpenAi)]);
+        catalog.set_discovery_settings(DiscoverySettings {
+            enabled: true,
+            persist: DiscoveryPersistMode::Session,
+            ttl: Duration::from_secs(60),
+            rate_limit_window: Duration::from_secs(60),
+            deny: Vec::new(),
+        });
+        let discovery = Arc::new(MockDiscovery::new());
+        catalog.register_discovery(discovery.clone());
+
+        assert_eq!(
+            catalog.discover("static").await.unwrap().unwrap().id,
+            "static"
+        );
+        assert_eq!(discovery.calls.load(Ordering::SeqCst), 0);
+
+        let discovered = catalog.discover("litellm/custom").await.unwrap().unwrap();
+        assert_eq!(discovered.provider, Provider::OpenAiCompatible);
+        assert_eq!(discovery.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            catalog.get_owned("litellm/custom").unwrap().id,
+            "litellm/custom"
+        );
+
+        catalog.discover("litellm/custom").await.unwrap();
+        assert_eq!(discovery.calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn runtime_discovery_rate_limits_and_honors_deny_list() {
+        let catalog = Catalog::from_models(Vec::new());
+        catalog.set_discovery_settings(DiscoverySettings {
+            enabled: true,
+            persist: DiscoveryPersistMode::Session,
+            ttl: Duration::from_secs(60),
+            rate_limit_window: Duration::from_secs(60),
+            deny: vec!["blocked/*".to_string()],
+        });
+        let discovery = Arc::new(MockDiscovery::new());
+        catalog.register_discovery(discovery.clone());
+
+        assert!(catalog.discover("blocked/model").await.unwrap().is_none());
+        assert_eq!(discovery.calls.load(Ordering::SeqCst), 0);
+
+        assert!(catalog.discover("missing").await.unwrap().is_none());
+        assert!(catalog.discover("missing").await.unwrap().is_none());
+        assert_eq!(discovery.calls.load(Ordering::SeqCst), 1);
     }
 
     #[test]
@@ -283,10 +650,10 @@ mod tests {
 
     #[test]
     fn builtin_build_fallback_chain() {
-        let fallbacks = HashMap::from([("anthropic".to_string(), vec![
-            "gemini".to_string(),
-            "openai".to_string(),
-        ])]);
+        let fallbacks = HashMap::from([(
+            "anthropic".to_string(),
+            vec!["gemini".to_string(), "openai".to_string()],
+        )]);
         let chain = Catalog::builtin().build_fallback_chain(
             Provider::Anthropic,
             "claude-opus-4-6",
@@ -320,10 +687,10 @@ mod tests {
 
     #[test]
     fn builtin_build_fallback_chain_skips_no_capability_match() {
-        let fallbacks = HashMap::from([("anthropic".to_string(), vec![
-            "openai".to_string(),
-            "kimi".to_string(),
-        ])]);
+        let fallbacks = HashMap::from([(
+            "anthropic".to_string(),
+            vec!["openai".to_string(), "kimi".to_string()],
+        )]);
         let chain = Catalog::builtin().build_fallback_chain(
             Provider::Anthropic,
             "claude-haiku-4-5",
@@ -350,30 +717,30 @@ mod tests {
         use crate::types::{Model, ModelCosts, ModelFeatures, ModelLimits};
 
         let models = vec![Model {
-            id:                   "test-model".to_string(),
-            provider:             Provider::Anthropic,
-            family:               "test".to_string(),
-            display_name:         "Test Model".to_string(),
-            limits:               ModelLimits {
+            id: "test-model".to_string(),
+            provider: Provider::Anthropic,
+            family: "test".to_string(),
+            display_name: "Test Model".to_string(),
+            limits: ModelLimits {
                 context_window: 100_000,
-                max_output:     Some(4096),
+                max_output: Some(4096),
             },
-            training:             None,
-            knowledge_cutoff:     None,
-            features:             ModelFeatures {
-                tools:     true,
-                vision:    false,
+            training: None,
+            knowledge_cutoff: None,
+            features: ModelFeatures {
+                tools: true,
+                vision: false,
                 reasoning: false,
-                effort:    false,
+                effort: false,
             },
-            costs:                ModelCosts {
-                input_cost_per_mtok:       Some(1.0),
-                output_cost_per_mtok:      Some(5.0),
+            costs: ModelCosts {
+                input_cost_per_mtok: Some(1.0),
+                output_cost_per_mtok: Some(5.0),
                 cache_input_cost_per_mtok: None,
             },
             estimated_output_tps: None,
-            aliases:              vec!["test".to_string()],
-            default:              true,
+            aliases: vec!["test".to_string()],
+            default: true,
         }];
 
         let catalog = Catalog::from_models(models);

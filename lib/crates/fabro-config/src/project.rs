@@ -21,10 +21,10 @@ const CONFIG_FILENAME: &str = ".fabro/project.toml";
 #[derive(Clone, Debug)]
 pub struct WorkflowPathResolution {
     pub resolved_workflow_path: PathBuf,
-    pub dot_path:               PathBuf,
-    pub workflow_config:        Option<SettingsLayer>,
-    pub workflow_toml_path:     Option<PathBuf>,
-    pub workflow_slug:          Option<String>,
+    pub dot_path: PathBuf,
+    pub workflow_config: Option<SettingsLayer>,
+    pub workflow_toml_path: Option<PathBuf>,
+    pub workflow_slug: Option<String>,
 }
 
 /// Parse a project config from a TOML string.
@@ -222,8 +222,8 @@ fn user_workflows_dir() -> PathBuf {
 /// Metadata about a discovered workflow.
 #[derive(Clone, Debug, Serialize)]
 pub struct WorkflowInfo {
-    pub name:   String,
-    pub goal:   Option<String>,
+    pub name: String,
+    pub goal: Option<String>,
     pub source: WorkflowSource,
 }
 
@@ -447,12 +447,17 @@ retros = true
     }
 
     #[test]
-    fn parse_rejects_legacy_llm_section() {
-        let err = parse_project_config("_version = 1\n[llm]\nprovider = \"openai\"\n").unwrap_err();
-        let text = format!("{err:#}");
-        assert!(
-            text.contains("run.model") || text.contains("llm"),
-            "expected rename hint for [llm]: {text}"
+    fn parse_accepts_llm_discovery_section() {
+        let config = parse_project_config(
+            "_version = 1\n[llm.discovery]\nenabled = true\npersist = \"session\"\n",
+        )
+        .unwrap();
+        assert_eq!(
+            config
+                .llm
+                .and_then(|llm| llm.discovery)
+                .and_then(|discovery| discovery.enabled),
+            Some(true)
         );
     }
 
