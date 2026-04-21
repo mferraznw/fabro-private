@@ -905,13 +905,17 @@ impl LintRule for ScriptAbsoluteCdRule {
 
 // --- Shared helpers for model/provider validation ---
 
-fn check_model_known(
+fn check_model_known_for_provider(
     rule_name: &str,
     model: &str,
+    provider: Option<&str>,
     context: &str,
     node_id: Option<String>,
 ) -> Option<Diagnostic> {
     if fabro_model::Catalog::builtin().get(model).is_some() {
+        return None;
+    }
+    if provider.is_some_and(provider_allows_dynamic_models) {
         return None;
     }
     Some(Diagnostic {
@@ -924,6 +928,12 @@ fn check_model_known(
         edge: None,
         fix: Some("Use a model ID from `fabro model list`".to_string()),
     })
+}
+
+fn provider_allows_dynamic_models(provider: &str) -> bool {
+    provider
+        .parse::<fabro_model::Provider>()
+        .is_ok_and(|provider| provider == fabro_model::Provider::OpenAiCompatible)
 }
 
 fn check_provider_known(
@@ -982,11 +992,22 @@ impl LintRule for StylesheetModelKnownRule {
         let mut diagnostics = Vec::new();
         for rule in &stylesheet.rules {
             let label = Self::selector_label(&rule.selector);
+            let provider = rule
+                .declarations
+                .iter()
+                .find(|decl| decl.property == "provider")
+                .map(|decl| decl.value.as_str());
             for decl in &rule.declarations {
                 let context = format!("in stylesheet rule '{label}'");
                 match decl.property.as_str() {
                     "model" => {
-                        if let Some(d) = check_model_known(self.name(), &decl.value, &context, None)
+                        if let Some(d) = check_model_known_for_provider(
+                            self.name(),
+                            &decl.value,
+                            provider,
+                            &context,
+                            None,
+                        )
                         {
                             diagnostics.push(d);
                         }
@@ -1021,7 +1042,13 @@ impl LintRule for NodeModelKnownRule {
             let context = format!("on node '{}'", node.id);
             let node_id = Some(node.id.clone());
             if let Some(model) = node.model() {
-                if let Some(d) = check_model_known(self.name(), model, &context, node_id.clone()) {
+                if let Some(d) = check_model_known_for_provider(
+                    self.name(),
+                    model,
+                    node.provider(),
+                    &context,
+                    node_id.clone(),
+                ) {
                     diagnostics.push(d);
                 }
             }
@@ -3174,6 +3201,24 @@ mod tests {
         assert_eq!(d[0].severity, Severity::Warning);
         assert!(d[0].message.contains("nonexistent-model-xyz"));
         assert_eq!(d[0].node_id.as_deref(), Some("work"));
+    }
+
+    #[test]
+    fn node_model_known_rule_allows_litellm_dynamic_model() {
+        let mut g = minimal_graph();
+        let mut node = Node::new("work");
+        node.attrs.insert(
+            "model".to_string(),
+            AttrValue::String("qwen3.6-plus".to_string()),
+        );
+        node.attrs.insert(
+            "provider".to_string(),
+            AttrValue::String("litellm".to_string()),
+        );
+        g.nodes.insert("work".to_string(), node);
+        let rule = NodeModelKnownRule;
+        let d = rule.apply(&g);
+        assert!(d.is_empty());
     }
 
     #[test]

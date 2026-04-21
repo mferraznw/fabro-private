@@ -13,6 +13,10 @@ use crate::vault_ext::{vault_get_credential, vault_set_credential};
 
 pub type EnvLookup = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
 
+const LITELLM_BASE_URL_ENV: &str = "LITELLM_BASE_URL";
+const LITELLM_API_KEY_ENV: &str = "LITELLM_API_KEY";
+const LITELLM_DEFAULT_API_KEY: &str = "none";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CliAgentKind {
     Claude,
@@ -166,6 +170,22 @@ impl CredentialResolver {
             }
         }
 
+        if provider == Provider::OpenAiCompatible
+            && usage == CredentialUsage::ApiRequest
+            && self
+                .lookup_env_or_vault(vault, LITELLM_BASE_URL_ENV)
+                .is_some()
+        {
+            return Ok(AuthCredential {
+                provider,
+                details: AuthDetails::ApiKey {
+                    key: self
+                        .lookup_env_or_vault(vault, LITELLM_API_KEY_ENV)
+                        .unwrap_or_else(|| LITELLM_DEFAULT_API_KEY.to_string()),
+                },
+            });
+        }
+
         Err(ResolveError::NotConfigured(provider))
     }
 
@@ -177,6 +197,10 @@ impl CredentialResolver {
                 .api_key_env_vars()
                 .iter()
                 .any(|env_var| self.lookup_env_or_vault(vault, env_var).is_some())
+            || (provider == Provider::OpenAiCompatible
+                && self
+                    .lookup_env_or_vault(vault, LITELLM_BASE_URL_ENV)
+                    .is_some())
     }
 
     fn lookup_env_or_vault(&self, vault: &Vault, name: &str) -> Option<String> {
@@ -192,8 +216,8 @@ impl CredentialResolver {
             Provider::Kimi
             | Provider::Zai
             | Provider::Minimax
-            | Provider::Inception
-            | Provider::OpenAiCompatible => None,
+            | Provider::Inception => None,
+            Provider::OpenAiCompatible => self.lookup_env_or_vault(vault, LITELLM_BASE_URL_ENV),
         };
         match &credential.details {
             AuthDetails::ApiKey { key } => ApiCredential {
@@ -290,12 +314,7 @@ pub async fn configured_providers_from_process_env(
         None => Provider::ALL
             .iter()
             .copied()
-            .filter(|provider| {
-                provider
-                    .api_key_env_vars()
-                    .iter()
-                    .any(|env_var| std::env::var(env_var).is_ok())
-            })
+            .filter(|provider| provider.has_api_key())
             .collect(),
     }
 }
@@ -320,7 +339,7 @@ fn credential_ids_for(provider: Provider, usage: CredentialUsage) -> &'static [&
         (Provider::Zai, _) => &["zai"],
         (Provider::Minimax, _) => &["minimax"],
         (Provider::Inception, _) => &["inception"],
-        (Provider::OpenAiCompatible, _) => &[],
+        (Provider::OpenAiCompatible, _) => &["litellm", "openai_compatible"],
     }
 }
 
@@ -670,6 +689,51 @@ mod tests {
 
         assert_eq!(resolver.configured_providers(&vault), vec![
             Provider::OpenAi
+        ]);
+    }
+
+    #[tokio::test]
+    async fn litellm_api_request_uses_base_url_and_optional_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let vault = Vault::load(dir.path().join("secrets.json")).unwrap();
+        let resolver = test_resolver(
+            vault,
+            Arc::new(|name| match name {
+                LITELLM_BASE_URL_ENV => Some("http://localhost:4000/v1".to_string()),
+                _ => None,
+            }),
+        );
+
+        let ResolvedCredential::Api(api) = resolver
+            .resolve(Provider::OpenAiCompatible, CredentialUsage::ApiRequest)
+            .await
+            .unwrap()
+        else {
+            panic!("expected api credential");
+        };
+
+        assert_eq!(api.provider, Provider::OpenAiCompatible);
+        assert_eq!(api.base_url.as_deref(), Some("http://localhost:4000/v1"));
+        assert_eq!(
+            api.auth_header,
+            ApiKeyHeader::Bearer(LITELLM_DEFAULT_API_KEY.to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn configured_providers_includes_litellm_base_url() {
+        let dir = tempfile::tempdir().unwrap();
+        let vault = Vault::load(dir.path().join("secrets.json")).unwrap();
+        let resolver = test_resolver(
+            vault,
+            Arc::new(|name| {
+                (name == LITELLM_BASE_URL_ENV).then(|| "http://localhost:4000/v1".to_string())
+            }),
+        );
+        let vault = resolver.vault.read().await;
+
+        assert_eq!(resolver.configured_providers(&vault), vec![
+            Provider::OpenAiCompatible
         ]);
     }
 

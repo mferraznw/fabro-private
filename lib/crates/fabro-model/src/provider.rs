@@ -19,7 +19,13 @@ pub enum Provider {
     Zai,
     Minimax,
     Inception,
-    #[serde(rename = "openai_compatible", alias = "open_ai_compatible")]
+    #[serde(
+        rename = "openai_compatible",
+        alias = "open_ai_compatible",
+        alias = "openai-compatible",
+        alias = "litellm",
+        alias = "lite_llm"
+    )]
     OpenAiCompatible,
 }
 
@@ -33,6 +39,7 @@ impl Provider {
         Self::Zai,
         Self::Minimax,
         Self::Inception,
+        Self::OpenAiCompatible,
     ];
 
     /// Environment variable names that can provide the API key for this
@@ -48,7 +55,7 @@ impl Provider {
             Self::Zai => &["ZAI_API_KEY"],
             Self::Minimax => &["MINIMAX_API_KEY"],
             Self::Inception => &["INCEPTION_API_KEY"],
-            Self::OpenAiCompatible => &[],
+            Self::OpenAiCompatible => &["LITELLM_API_KEY"],
         }
     }
 
@@ -56,9 +63,19 @@ impl Provider {
     /// set.
     #[must_use]
     pub fn has_api_key(self) -> bool {
-        self.api_key_env_vars()
-            .iter()
-            .any(|var| std::env::var(var).is_ok())
+        match self {
+            Self::OpenAiCompatible => {
+                std::env::var("LITELLM_BASE_URL").is_ok()
+                    || self
+                        .api_key_env_vars()
+                        .iter()
+                        .any(|var| std::env::var(var).is_ok())
+            }
+            _ => self
+                .api_key_env_vars()
+                .iter()
+                .any(|var| std::env::var(var).is_ok()),
+        }
     }
 
     /// Pick the best default provider based on which API keys are available.
@@ -137,7 +154,8 @@ impl FromStr for Provider {
             "zai" => Ok(Self::Zai),
             "minimax" => Ok(Self::Minimax),
             "inception" | "inception_labs" => Ok(Self::Inception),
-            "openai_compatible" => Ok(Self::OpenAiCompatible),
+            "openai_compatible" | "open_ai_compatible" | "openai-compatible" | "litellm"
+            | "lite_llm" => Ok(Self::OpenAiCompatible),
             other => Err(format!("unknown provider: {other}")),
         }
     }
@@ -192,6 +210,18 @@ mod tests {
     #[test]
     fn inception_as_str() {
         assert_eq!(Provider::Inception.as_str(), "inception");
+    }
+
+    #[test]
+    fn parse_litellm_alias() {
+        assert_eq!(
+            "litellm".parse::<Provider>().unwrap(),
+            Provider::OpenAiCompatible
+        );
+        assert_eq!(
+            "openai-compatible".parse::<Provider>().unwrap(),
+            Provider::OpenAiCompatible
+        );
     }
 
     #[test]
@@ -283,6 +313,14 @@ mod tests {
         assert_eq!(Provider::Inception.api_key_env_vars(), &[
             "INCEPTION_API_KEY"
         ]);
+    }
+
+    #[test]
+    fn api_key_env_vars_openai_compatible() {
+        assert_eq!(
+            Provider::OpenAiCompatible.api_key_env_vars(),
+            &["LITELLM_API_KEY"]
+        );
     }
 
     #[test]

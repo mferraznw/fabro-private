@@ -50,7 +50,9 @@ use fabro_llm::types::{
     ContentPart, FinishReason, Message as LlmMessage, Request as LlmRequest, Role, ToolChoice,
     ToolDefinition,
 };
-use fabro_model::{BilledModelUsage, BilledTokenCounts};
+use fabro_model::{
+    BilledModelUsage, BilledTokenCounts, Model, ModelCosts, ModelFeatures, ModelLimits, Provider,
+};
 use fabro_sandbox::daytona::DaytonaSandbox;
 use fabro_sandbox::reconnect::reconnect;
 use fabro_sandbox::{Sandbox, SandboxProvider};
@@ -5990,11 +5992,11 @@ async fn unpause_run(
 
 async fn list_models(
     _auth: AuthenticatedService,
-    State(_state): State<Arc<AppState>>,
+    State(state): State<Arc<AppState>>,
     Query(params): Query<ModelListParams>,
 ) -> Response {
     let provider = match params.provider.as_deref() {
-        Some(value) => match fabro_model::Provider::from_str(value) {
+        Some(value) => match Provider::from_str(value) {
             Ok(provider) => Some(provider),
             Err(err) => return ApiError::new(StatusCode::BAD_REQUEST, err).into_response(),
         },
@@ -6008,6 +6010,20 @@ async fn list_models(
     let mut models = fabro_model::Catalog::builtin()
         .list(provider)
         .into_iter()
+        .cloned()
+        .collect::<Vec<_>>();
+
+    if provider.is_none_or(|provider| provider == Provider::OpenAiCompatible) {
+        match fetch_litellm_models(&state).await {
+            Ok(mut litellm_models) => models.append(&mut litellm_models),
+            Err(err) => warn!(error = %err, "Failed to fetch LiteLLM models"),
+        }
+    }
+
+    dedupe_models_by_id(&mut models);
+
+    let mut models = models
+        .into_iter()
         .filter(|model| match &query {
             Some(query) => {
                 model.id.to_lowercase().contains(query)
@@ -6019,7 +6035,6 @@ async fn list_models(
             }
             None => true,
         })
-        .cloned()
         .collect::<Vec<_>>();
 
     let has_more = models.len() > offset.saturating_add(limit);
@@ -6035,6 +6050,84 @@ async fn list_models(
         .into_response()
 }
 
+#[derive(serde::Deserialize)]
+struct OpenAiModelsResponse {
+    data: Vec<OpenAiModelEntry>,
+}
+
+#[derive(serde::Deserialize)]
+struct OpenAiModelEntry {
+    id: String,
+}
+
+async fn fetch_litellm_models(state: &AppState) -> anyhow::Result<Vec<Model>> {
+    let Some(base_url) = state.provider_credentials.get("LITELLM_BASE_URL").await else {
+        return Ok(Vec::new());
+    };
+
+    let url = format!("{}/models", base_url.trim_end_matches('/'));
+    let client = fabro_http::http_client()?;
+    let mut request = client.get(url);
+    if let Some(api_key) = state
+        .provider_credentials
+        .get("LITELLM_API_KEY")
+        .await
+        .filter(|api_key| !api_key.is_empty() && api_key != "none")
+    {
+        request = request.bearer_auth(api_key);
+    }
+
+    let response = request.send().await?.error_for_status()?;
+    let body = response.json::<OpenAiModelsResponse>().await?;
+    Ok(body
+        .data
+        .into_iter()
+        .filter(|entry| !entry.id.trim().is_empty())
+        .map(|entry| litellm_model(entry.id))
+        .collect())
+}
+
+fn litellm_model(id: String) -> Model {
+    let family = id
+        .split(['/', ':'])
+        .next_back()
+        .and_then(|name| name.split('-').next())
+        .filter(|value| !value.is_empty())
+        .unwrap_or("litellm")
+        .to_string();
+    Model {
+        display_name: id.clone(),
+        id,
+        provider: Provider::OpenAiCompatible,
+        family,
+        limits: ModelLimits {
+            context_window: 128_000,
+            max_output:     Some(16_384),
+        },
+        training: None,
+        knowledge_cutoff: None,
+        features: ModelFeatures {
+            tools:     true,
+            vision:    true,
+            reasoning: false,
+            effort:    false,
+        },
+        costs: ModelCosts {
+            input_cost_per_mtok:       None,
+            output_cost_per_mtok:      None,
+            cache_input_cost_per_mtok: None,
+        },
+        estimated_output_tps: None,
+        aliases: Vec::new(),
+        default: false,
+    }
+}
+
+fn dedupe_models_by_id(models: &mut Vec<Model>) {
+    let mut seen = HashSet::new();
+    models.retain(|model| seen.insert(model.id.clone()));
+}
+
 async fn test_model(
     _auth: AuthenticatedService,
     State(state): State<Arc<AppState>>,
@@ -6048,8 +6141,18 @@ async fn test_model(
         },
         None => ModelTestMode::Basic,
     };
-    let Some(info) = fabro_model::Catalog::builtin().get(&id) else {
-        return ApiError::not_found(format!("Model not found: {id}")).into_response();
+    let info = match fabro_model::Catalog::builtin().get(&id).cloned() {
+        Some(info) => info,
+        None => match fetch_litellm_models(&state).await {
+            Ok(models) => match models.into_iter().find(|model| model.id == id) {
+                Some(info) => info,
+                None => return ApiError::not_found(format!("Model not found: {id}")).into_response(),
+            },
+            Err(err) => {
+                warn!(error = %err, model = %id, "Failed to fetch LiteLLM model for test");
+                return ApiError::not_found(format!("Model not found: {id}")).into_response();
+            }
+        },
     };
 
     let llm_result = match state.build_llm_client().await {
@@ -6082,7 +6185,7 @@ async fn test_model(
     }
     let client = Arc::new(llm_result.client);
 
-    let outcome = run_model_test_with_client(info, mode, client).await;
+    let outcome = run_model_test_with_client(&info, mode, client).await;
     Json(serde_json::json!({
         "model_id": info.id,
         "status": outcome.status.as_str(),
@@ -7119,6 +7222,69 @@ type = "http"
             "gpt-5.3-codex".to_string(),
             "gpt-5.3-codex-spark".to_string()
         ]);
+    }
+
+    #[tokio::test]
+    async fn list_models_includes_litellm_dynamic_models() {
+        use httpmock::Method::GET;
+        use httpmock::MockServer;
+
+        let server = MockServer::start_async().await;
+        let models_mock = server
+            .mock_async(|when, then| {
+                when.method(GET)
+                    .path("/v1/models")
+                    .header("authorization", "Bearer litellm-key");
+                then.status(200)
+                    .header("content-type", "application/json")
+                    .json_body(json!({
+                        "object": "list",
+                        "data": [
+                            { "id": "openrouter/qwen/qwen3.6-plus", "object": "model" },
+                            { "id": "local-coder", "object": "model" }
+                        ]
+                    }));
+            })
+            .await;
+        let base_url = server.url("/v1");
+        let state = create_app_state_with_env_lookup(SettingsLayer::default(), 5, move |name| {
+            match name {
+                "LITELLM_BASE_URL" => Some(base_url.clone()),
+                "LITELLM_API_KEY" => Some("litellm-key".to_string()),
+                _ => None,
+            }
+        });
+        let app = build_router(state, AuthMode::Disabled);
+
+        let req = Request::builder()
+            .method("GET")
+            .uri(api("/models?provider=litellm"))
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(req).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = body_json(response.into_body()).await;
+        let model_ids = body["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|model| model["id"].as_str().unwrap().to_string())
+            .collect::<Vec<_>>();
+
+        assert_eq!(model_ids, vec![
+            "openrouter/qwen/qwen3.6-plus".to_string(),
+            "local-coder".to_string()
+        ]);
+        assert!(
+            body["data"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|model| model["provider"] == "openai_compatible")
+        );
+        models_mock.assert_async().await;
     }
 
     #[tokio::test]

@@ -1,0 +1,23 @@
+digraph LiteLLMSmoke {
+    graph [goal="Smoke test Fabro routing through the local LiteLLM proxy"]
+    rankdir=LR
+
+    start [shape=Mdiamond, label="Start"]
+    exit  [shape=Msquare, label="Exit"]
+
+    qwen_check [
+        label="Qwen 3.6 Plus",
+        provider="litellm",
+        model="qwen3.6-plus",
+        prompt="Return exactly one short sentence starting with QWEN_OK that says Fabro reached qwen3.6-plus through LiteLLM."
+    ]
+
+    gemma_check [
+        label="Gemma 4 26B",
+        provider="litellm",
+        model="gemma-4-26b",
+        prompt="Return exactly one short sentence starting with GEMMA_OK that says Fabro reached gemma-4-26b through LiteLLM."
+    ]
+
+    start -> qwen_check -> gemma_check -> exit
+}

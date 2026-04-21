@@ -14,6 +14,7 @@ const KIMI_BASE_URL: &str = "https://api.moonshot.ai/v1";
 const ZAI_BASE_URL: &str = "https://api.z.ai/api/coding/paas/v4";
 const MINIMAX_BASE_URL: &str = "https://api.minimax.io/v1";
 const INCEPTION_BASE_URL: &str = "https://api.inceptionlabs.ai/v1";
+const LITELLM_PROVIDER_NAME: &str = "litellm";
 
 /// The core client that routes requests to provider adapters (Section 2.2, 3).
 #[derive(Clone)]
@@ -248,11 +249,20 @@ impl Client {
                     client.register_provider(Arc::new(adapter)).await?;
                 }
                 fabro_model::Provider::OpenAiCompatible => {
-                    return Err(Error::Configuration {
-                        message: "Provider::OpenAiCompatible is not supported by from_credentials"
-                            .to_string(),
-                        source:  None,
-                    });
+                    let Some(base_url) = credential.base_url else {
+                        return Err(Error::Configuration {
+                            message: "LITELLM_BASE_URL is required for provider 'litellm'"
+                                .to_string(),
+                            source:  None,
+                        });
+                    };
+                    let mut adapter =
+                        providers::OpenAiCompatibleAdapter::new(auth_value, base_url)
+                            .with_name(LITELLM_PROVIDER_NAME);
+                    if !credential.extra_headers.is_empty() {
+                        adapter = adapter.with_default_headers(credential.extra_headers);
+                    }
+                    client.register_provider(Arc::new(adapter)).await?;
                 }
             }
         }
@@ -293,27 +303,46 @@ impl Client {
 
     /// Resolve the provider for a request.
     fn resolve_provider(&self, request: &Request) -> Result<Arc<dyn ProviderAdapter>, Error> {
+        if let Some(provider_name) = request.provider.as_deref() {
+            for candidate in provider_lookup_candidates(provider_name) {
+                if let Some(provider) = self.providers.get(candidate.as_str()) {
+                    return Ok(provider.clone());
+                }
+            }
+            return Err(Error::Configuration {
+                message: format!(
+                    "Provider '{provider_name}' not registered. Registered: {:?}",
+                    self.provider_names()
+                ),
+                source:  None,
+            });
+        }
+
         let catalog_provider = fabro_model::Catalog::builtin()
             .get(&request.model)
             .map(|info| info.provider.to_string());
 
-        let provider_name = request
-            .provider
+        let provider_name = catalog_provider
             .as_deref()
-            .or(catalog_provider.as_deref())
             .or(self.default_provider.as_deref())
             .ok_or_else(|| Error::Configuration {
                 message: "No provider specified and no default provider set".into(),
                 source:  None,
             })?;
 
-        self.providers
-            .get(provider_name)
-            .cloned()
-            .ok_or_else(|| Error::Configuration {
-                message: format!("Provider '{provider_name}' not registered"),
-                source:  None,
-            })
+        for candidate in provider_lookup_candidates(provider_name) {
+            if let Some(provider) = self.providers.get(candidate.as_str()) {
+                return Ok(provider.clone());
+            }
+        }
+
+        Err(Error::Configuration {
+            message: format!(
+                "Provider '{provider_name}' not registered. Registered: {:?}",
+                self.provider_names()
+            ),
+            source:  None,
+        })
     }
 
     /// Send a blocking request (Section 4.1).
@@ -413,6 +442,14 @@ impl Client {
 fn auth_value(auth_header: &ApiKeyHeader) -> String {
     match auth_header {
         ApiKeyHeader::Bearer(value) | ApiKeyHeader::Custom { value, .. } => value.clone(),
+    }
+}
+
+fn provider_lookup_candidates(provider_name: &str) -> Vec<String> {
+    match provider_name {
+        "openai_compatible" | "open_ai_compatible" | "openai-compatible" | "litellm"
+        | "lite_llm" => vec![provider_name.to_string(), LITELLM_PROVIDER_NAME.to_string()],
+        _ => vec![provider_name.to_string()],
     }
 }
 
@@ -561,6 +598,22 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn explicit_unknown_provider_does_not_fall_back_to_default() {
+        let mut client = Client::new(HashMap::new(), None, vec![]);
+        client
+            .register_provider(Arc::new(MockProvider::new("openai", "from openai")))
+            .await
+            .unwrap();
+
+        let mut req = test_request();
+        req.provider = Some("litellm".into());
+        let result = client.complete(&req).await;
+
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), Error::Configuration { .. }));
+    }
+
+    #[tokio::test]
     async fn from_credentials_registers_multiple_providers() {
         let client = Client::from_credentials(vec![
             ApiCredential {
@@ -610,6 +663,39 @@ mod tests {
 
         assert_eq!(client.provider_names(), vec!["kimi"]);
         assert_eq!(client.default_provider(), Some("kimi"));
+    }
+
+    #[tokio::test]
+    async fn from_credentials_registers_litellm_adapter() {
+        let client = Client::from_credentials(vec![ApiCredential {
+            provider:      fabro_model::Provider::OpenAiCompatible,
+            auth_header:   ApiKeyHeader::Bearer("litellm-key".to_string()),
+            extra_headers: HashMap::new(),
+            base_url:      Some("http://localhost:4000/v1".to_string()),
+            codex_mode:    false,
+            org_id:        None,
+            project_id:    None,
+        }])
+        .await
+        .unwrap();
+
+        assert_eq!(client.provider_names(), vec!["litellm"]);
+        assert_eq!(client.default_provider(), Some("litellm"));
+    }
+
+    #[tokio::test]
+    async fn openai_compatible_provider_alias_routes_to_litellm() {
+        let mut client = Client::new(HashMap::new(), None, vec![]);
+        client
+            .register_provider(Arc::new(MockProvider::new("litellm", "from litellm")))
+            .await
+            .unwrap();
+
+        let mut req = test_request();
+        req.provider = Some("openai_compatible".into());
+        let response = client.complete(&req).await.unwrap();
+
+        assert_eq!(response.text(), "from litellm");
     }
 
     #[tokio::test]

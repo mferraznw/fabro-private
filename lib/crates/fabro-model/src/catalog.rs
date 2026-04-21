@@ -389,6 +389,9 @@ mod tests {
     #[test]
     fn every_provider_has_catalog_models() {
         for &provider in Provider::ALL {
+            if provider == Provider::OpenAiCompatible {
+                continue;
+            }
             let models = Catalog::builtin().list(Some(provider));
             assert!(
                 !models.is_empty(),
@@ -400,6 +403,9 @@ mod tests {
     #[test]
     fn every_provider_has_exactly_one_default_model() {
         for &provider in Provider::ALL {
+            if provider == Provider::OpenAiCompatible {
+                continue;
+            }
             let defaults: Vec<_> = Catalog::builtin()
                 .list(Some(provider))
                 .into_iter()

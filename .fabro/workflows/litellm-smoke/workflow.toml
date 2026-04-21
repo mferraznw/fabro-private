@@ -1,0 +1,17 @@
+_version = 1
+
+[workflow]
+graph = "workflow.fabro"
+
+[run]
+goal = "Smoke test Fabro routing through the local LiteLLM proxy"
+
+[run.execution]
+retros = false
+
+[run.sandbox]
+provider = "local"
+
+[run.model]
+provider = "litellm"
+name = "qwen3.6-plus"

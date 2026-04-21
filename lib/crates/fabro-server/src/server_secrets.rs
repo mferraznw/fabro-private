@@ -73,7 +73,6 @@ impl ProviderCredentials {
         }
     }
 
-    #[cfg(test)]
     pub(crate) async fn get(&self, name: &str) -> Option<String> {
         let env_value = (self.env_lookup)(name);
         if env_value.is_some() {
