@@ -57,7 +57,7 @@ mod tests {
             ProviderErrorKind::Server,
             500,
         )));
-        assert!(FallbackStrategy::should_fallback(&provider_error(
+        assert!(!FallbackStrategy::should_fallback(&provider_error(
             ProviderErrorKind::ContextLength,
             413,
         )));

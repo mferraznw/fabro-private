@@ -12,7 +12,7 @@ pub use billing::{
 };
 pub use catalog::{
     Catalog, DiscoveryFuture, DiscoveryPersistMode, DiscoverySettings, FallbackTarget,
-    ModelDiscovery,
+    ModelDiscovery, validate_model_id,
 };
 pub use model_ref::ModelHandle;
 pub use provider::Provider;

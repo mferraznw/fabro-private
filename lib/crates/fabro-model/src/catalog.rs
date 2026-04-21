@@ -1,8 +1,7 @@
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::LazyLock;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, LazyLock, RwLock};
 use std::time::{Duration, Instant};
 
 use crate::provider::Provider;
@@ -19,7 +18,7 @@ static GLOBAL_CATALOG: LazyLock<Catalog> = LazyLock::new(|| {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FallbackTarget {
     pub provider: String,
-    pub model: String,
+    pub model:    String,
 }
 
 pub type DiscoveryFuture<'a> =
@@ -27,6 +26,22 @@ pub type DiscoveryFuture<'a> =
 
 pub trait ModelDiscovery: Send + Sync {
     fn discover<'a>(&'a self, id: &'a str) -> DiscoveryFuture<'a>;
+}
+
+pub fn validate_model_id(id: &str) -> Result<(), String> {
+    if id.is_empty() || id.len() > 256 {
+        return Err("model id must be 1..=256 bytes".to_string());
+    }
+    if id.chars().any(char::is_control) {
+        return Err("model id must not contain control characters".to_string());
+    }
+    if !id
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || b"/._:-".contains(&byte))
+    {
+        return Err("model id contains unsupported characters".to_string());
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -53,11 +68,11 @@ impl DiscoveryPersistMode {
 
 #[derive(Debug, Clone)]
 pub struct DiscoverySettings {
-    pub enabled: bool,
-    pub persist: DiscoveryPersistMode,
-    pub ttl: Duration,
+    pub enabled:           bool,
+    pub persist:           DiscoveryPersistMode,
+    pub ttl:               Duration,
     pub rate_limit_window: Duration,
-    pub deny: Vec<String>,
+    pub deny:              Vec<String>,
 }
 
 impl DiscoverySettings {
@@ -100,9 +115,9 @@ impl Default for DiscoverySettings {
 
 #[derive(Clone)]
 struct DiscoveredEntry {
-    model: ModelMeta,
+    model:      ModelMeta,
     discovered: Instant,
-    ttl: Duration,
+    ttl:        Duration,
 }
 
 /// Typed model catalog backed by a `Vec<Model>`.
@@ -110,11 +125,11 @@ struct DiscoveredEntry {
 /// Use [`Catalog::builtin()`] for the embedded catalog, or
 /// [`Catalog::from_models()`] for testing with custom model sets.
 pub struct Catalog {
-    models: Vec<Model>,
-    discovered: RwLock<HashMap<String, DiscoveredEntry>>,
+    models:      Vec<Model>,
+    discovered:  RwLock<HashMap<String, DiscoveredEntry>>,
     discoveries: RwLock<Vec<Arc<dyn ModelDiscovery>>>,
-    probes: RwLock<HashMap<String, Instant>>,
-    settings: RwLock<DiscoverySettings>,
+    probes:      RwLock<HashMap<String, Instant>>,
+    settings:    RwLock<DiscoverySettings>,
 }
 
 impl Catalog {
@@ -187,14 +202,11 @@ impl Catalog {
         self.discovered
             .write()
             .expect("catalog discovered lock poisoned")
-            .insert(
-                model.id.clone(),
-                DiscoveredEntry {
-                    model,
-                    discovered: Instant::now(),
-                    ttl,
-                },
-            );
+            .insert(model.id.clone(), DiscoveredEntry {
+                model,
+                discovered: Instant::now(),
+                ttl,
+            });
     }
 
     pub fn register_discovery(&self, discovery: Arc<dyn ModelDiscovery>) {
@@ -220,6 +232,7 @@ impl Catalog {
     }
 
     pub async fn discover(&self, id: &str) -> Result<Option<ModelMeta>, String> {
+        validate_model_id(id)?;
         if let Some(model) = self.get_owned(id) {
             return Ok(Some(model));
         }
@@ -258,10 +271,14 @@ impl Catalog {
     fn rate_limited(&self, id: &str, window: Duration) -> bool {
         let now = Instant::now();
         let mut probes = self.probes.write().expect("catalog probes lock poisoned");
+        probes.retain(|_, last| now.duration_since(*last) < window);
         if let Some(last) = probes.get(id) {
             if now.duration_since(*last) < window {
                 return true;
             }
+        }
+        if probes.len() >= 2048 {
+            return true;
         }
         probes.insert(id.to_string(), now);
         false
@@ -393,7 +410,7 @@ impl Catalog {
                 let provider = provider_str.parse::<Provider>().ok()?;
                 self.closest(provider, reference).map(|m| FallbackTarget {
                     provider: provider_str.clone(),
-                    model: m.id.clone(),
+                    model:    m.id.clone(),
                 })
             })
             .collect()
@@ -470,19 +487,19 @@ mod tests {
             display_name: id.to_string(),
             limits: ModelLimits {
                 context_window: 1000,
-                max_output: Some(100),
+                max_output:     Some(100),
             },
             training: None,
             knowledge_cutoff: None,
             features: ModelFeatures {
-                tools: true,
-                vision: false,
+                tools:     true,
+                vision:    false,
                 reasoning: false,
-                effort: false,
+                effort:    false,
             },
             costs: ModelCosts {
-                input_cost_per_mtok: Some(1.0),
-                output_cost_per_mtok: Some(2.0),
+                input_cost_per_mtok:       Some(1.0),
+                output_cost_per_mtok:      Some(2.0),
                 cache_input_cost_per_mtok: None,
             },
             estimated_output_tps: None,
@@ -534,11 +551,11 @@ mod tests {
     async fn runtime_discovery_static_then_discovered_then_probe() {
         let catalog = Catalog::from_models(vec![test_model("static", Provider::OpenAi)]);
         catalog.set_discovery_settings(DiscoverySettings {
-            enabled: true,
-            persist: DiscoveryPersistMode::Session,
-            ttl: Duration::from_secs(60),
+            enabled:           true,
+            persist:           DiscoveryPersistMode::Session,
+            ttl:               Duration::from_secs(60),
             rate_limit_window: Duration::from_secs(60),
-            deny: Vec::new(),
+            deny:              Vec::new(),
         });
         let discovery = Arc::new(MockDiscovery::new());
         catalog.register_discovery(discovery.clone());
@@ -565,11 +582,11 @@ mod tests {
     async fn runtime_discovery_rate_limits_and_honors_deny_list() {
         let catalog = Catalog::from_models(Vec::new());
         catalog.set_discovery_settings(DiscoverySettings {
-            enabled: true,
-            persist: DiscoveryPersistMode::Session,
-            ttl: Duration::from_secs(60),
+            enabled:           true,
+            persist:           DiscoveryPersistMode::Session,
+            ttl:               Duration::from_secs(60),
             rate_limit_window: Duration::from_secs(60),
-            deny: vec!["blocked/*".to_string()],
+            deny:              vec!["blocked/*".to_string()],
         });
         let discovery = Arc::new(MockDiscovery::new());
         catalog.register_discovery(discovery.clone());
@@ -580,6 +597,25 @@ mod tests {
         assert!(catalog.discover("missing").await.unwrap().is_none());
         assert!(catalog.discover("missing").await.unwrap().is_none());
         assert_eq!(discovery.calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn runtime_discovery_rejects_control_character_model_ids() {
+        let catalog = Catalog::from_models(Vec::new());
+        catalog.set_discovery_settings(DiscoverySettings {
+            enabled:           true,
+            persist:           DiscoveryPersistMode::Session,
+            ttl:               Duration::from_secs(60),
+            rate_limit_window: Duration::from_secs(60),
+            deny:              Vec::new(),
+        });
+        let discovery = Arc::new(MockDiscovery::new());
+        catalog.register_discovery(discovery.clone());
+
+        let err = catalog.discover("bad\nmodel").await.unwrap_err();
+
+        assert!(err.contains("control characters"));
+        assert_eq!(discovery.calls.load(Ordering::SeqCst), 0);
     }
 
     #[test]
@@ -650,10 +686,10 @@ mod tests {
 
     #[test]
     fn builtin_build_fallback_chain() {
-        let fallbacks = HashMap::from([(
-            "anthropic".to_string(),
-            vec!["gemini".to_string(), "openai".to_string()],
-        )]);
+        let fallbacks = HashMap::from([("anthropic".to_string(), vec![
+            "gemini".to_string(),
+            "openai".to_string(),
+        ])]);
         let chain = Catalog::builtin().build_fallback_chain(
             Provider::Anthropic,
             "claude-opus-4-6",
@@ -687,10 +723,10 @@ mod tests {
 
     #[test]
     fn builtin_build_fallback_chain_skips_no_capability_match() {
-        let fallbacks = HashMap::from([(
-            "anthropic".to_string(),
-            vec!["openai".to_string(), "kimi".to_string()],
-        )]);
+        let fallbacks = HashMap::from([("anthropic".to_string(), vec![
+            "openai".to_string(),
+            "kimi".to_string(),
+        ])]);
         let chain = Catalog::builtin().build_fallback_chain(
             Provider::Anthropic,
             "claude-haiku-4-5",
@@ -717,30 +753,30 @@ mod tests {
         use crate::types::{Model, ModelCosts, ModelFeatures, ModelLimits};
 
         let models = vec![Model {
-            id: "test-model".to_string(),
-            provider: Provider::Anthropic,
-            family: "test".to_string(),
-            display_name: "Test Model".to_string(),
-            limits: ModelLimits {
+            id:                   "test-model".to_string(),
+            provider:             Provider::Anthropic,
+            family:               "test".to_string(),
+            display_name:         "Test Model".to_string(),
+            limits:               ModelLimits {
                 context_window: 100_000,
-                max_output: Some(4096),
+                max_output:     Some(4096),
             },
-            training: None,
-            knowledge_cutoff: None,
-            features: ModelFeatures {
-                tools: true,
-                vision: false,
+            training:             None,
+            knowledge_cutoff:     None,
+            features:             ModelFeatures {
+                tools:     true,
+                vision:    false,
                 reasoning: false,
-                effort: false,
+                effort:    false,
             },
-            costs: ModelCosts {
-                input_cost_per_mtok: Some(1.0),
-                output_cost_per_mtok: Some(5.0),
+            costs:                ModelCosts {
+                input_cost_per_mtok:       Some(1.0),
+                output_cost_per_mtok:      Some(5.0),
                 cache_input_cost_per_mtok: None,
             },
             estimated_output_tps: None,
-            aliases: vec!["test".to_string()],
-            default: true,
+            aliases:              vec!["test".to_string()],
+            default:              true,
         }];
 
         let catalog = Catalog::from_models(models);

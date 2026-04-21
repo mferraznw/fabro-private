@@ -33,16 +33,31 @@ pub fn billed_model_usage_from_llm(
         facts,
     };
 
-    let total_usd_micros = Catalog::builtin()
-        .get(model_id)
-        .filter(|candidate| candidate.provider == provider)
-        .and_then(|candidate| candidate.pricing_for(speed))
-        .and_then(|pricing| pricing.bill(&input))
-        .map(|amount| amount.0);
+    let total_usd_micros = usage.cost_usd.and_then(usd_to_micros).or_else(|| {
+        Catalog::builtin()
+            .get(model_id)
+            .filter(|candidate| candidate.provider == provider)
+            .and_then(|candidate| candidate.pricing_for(speed))
+            .and_then(|pricing| pricing.bill(&input))
+            .map(|amount| amount.0)
+    });
 
     BilledModelUsage {
         input,
         total_usd_micros,
+    }
+}
+
+#[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+fn usd_to_micros(usd: f64) -> Option<i64> {
+    if !usd.is_finite() || usd < 0.0 {
+        return None;
+    }
+    let micros = (usd * 1_000_000.0).round();
+    if micros >= i64::MAX as f64 {
+        Some(i64::MAX)
+    } else {
+        Some(micros as i64)
     }
 }
 
@@ -201,5 +216,20 @@ mod tests {
             billed_model_usage_from_llm("claude-opus-4-6", Provider::Anthropic, None, &usage);
 
         assert_eq!(billed.tokens().clone(), usage);
+    }
+
+    #[test]
+    fn billed_model_usage_prefers_litellm_reported_cost() {
+        let usage = TokenCounts {
+            input_tokens: 100,
+            output_tokens: 40,
+            cost_usd: Some(0.123_456),
+            ..TokenCounts::default()
+        };
+
+        let billed =
+            billed_model_usage_from_llm("gemma-4-26b", Provider::OpenAiCompatible, None, &usage);
+
+        assert_eq!(billed.total_usd_micros, Some(123_456));
     }
 }

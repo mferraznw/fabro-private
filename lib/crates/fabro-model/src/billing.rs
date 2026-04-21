@@ -132,25 +132,25 @@ pub struct ModelRef {
     pub provider: Provider,
     pub model_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub speed: Option<Speed>,
+    pub speed:    Option<Speed>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct TokenCounts {
-    pub input_tokens: i64,
-    pub output_tokens: i64,
+    pub input_tokens:       i64,
+    pub output_tokens:      i64,
     #[serde(default)]
-    pub reasoning_tokens: i64,
+    pub reasoning_tokens:   i64,
     #[serde(default)]
-    pub cache_read_tokens: i64,
+    pub cache_read_tokens:  i64,
     #[serde(default)]
     pub cache_write_tokens: i64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cost_usd: Option<f64>,
+    pub cost_usd:           Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub upstream_model: Option<String>,
+    pub upstream_model:     Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cache_hit: Option<bool>,
+    pub cache_hit:          Option<bool>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub upstream_fallbacks: Vec<String>,
 }
@@ -174,20 +174,30 @@ impl std::ops::Add for TokenCounts {
     type Output = Self;
 
     fn add(self, rhs: Self) -> Self::Output {
+        let mut upstream_fallbacks = self.upstream_fallbacks;
+        for fallback in rhs.upstream_fallbacks {
+            if !upstream_fallbacks.contains(&fallback) {
+                upstream_fallbacks.push(fallback);
+            }
+        }
         Self {
             input_tokens: self.input_tokens + rhs.input_tokens,
             output_tokens: self.output_tokens + rhs.output_tokens,
             reasoning_tokens: self.reasoning_tokens + rhs.reasoning_tokens,
             cache_read_tokens: self.cache_read_tokens + rhs.cache_read_tokens,
             cache_write_tokens: self.cache_write_tokens + rhs.cache_write_tokens,
-            cost_usd: self.cost_usd.or(rhs.cost_usd),
-            upstream_model: self.upstream_model.or(rhs.upstream_model),
-            cache_hit: self.cache_hit.or(rhs.cache_hit),
-            upstream_fallbacks: if self.upstream_fallbacks.is_empty() {
-                rhs.upstream_fallbacks
-            } else {
-                self.upstream_fallbacks
+            cost_usd: match (self.cost_usd, rhs.cost_usd) {
+                (Some(lhs), Some(rhs)) => Some(lhs + rhs),
+                (Some(value), None) | (None, Some(value)) => Some(value),
+                (None, None) => None,
             },
+            upstream_model: self.upstream_model.or(rhs.upstream_model),
+            cache_hit: match (self.cache_hit, rhs.cache_hit) {
+                (Some(lhs), Some(rhs)) => Some(lhs || rhs),
+                (Some(value), None) | (None, Some(value)) => Some(value),
+                (None, None) => None,
+            },
+            upstream_fallbacks,
         }
     }
 }
@@ -199,41 +209,51 @@ impl std::ops::AddAssign for TokenCounts {
         self.reasoning_tokens += rhs.reasoning_tokens;
         self.cache_read_tokens += rhs.cache_read_tokens;
         self.cache_write_tokens += rhs.cache_write_tokens;
-        self.cost_usd = self.cost_usd.or(rhs.cost_usd);
+        self.cost_usd = match (self.cost_usd, rhs.cost_usd) {
+            (Some(lhs), Some(rhs)) => Some(lhs + rhs),
+            (Some(value), None) | (None, Some(value)) => Some(value),
+            (None, None) => None,
+        };
         self.upstream_model = self.upstream_model.take().or(rhs.upstream_model);
-        self.cache_hit = self.cache_hit.or(rhs.cache_hit);
-        if self.upstream_fallbacks.is_empty() {
-            self.upstream_fallbacks = rhs.upstream_fallbacks;
+        self.cache_hit = match (self.cache_hit, rhs.cache_hit) {
+            (Some(lhs), Some(rhs)) => Some(lhs || rhs),
+            (Some(value), None) | (None, Some(value)) => Some(value),
+            (None, None) => None,
+        };
+        for fallback in rhs.upstream_fallbacks {
+            if !self.upstream_fallbacks.contains(&fallback) {
+                self.upstream_fallbacks.push(fallback);
+            }
         }
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ModelUsage {
-    pub model: ModelRef,
+    pub model:  ModelRef,
     pub tokens: TokenCounts,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OpenAiModelPricing {
-    pub input: PricePerMTok,
+    pub input:        PricePerMTok,
     pub cached_input: Option<PricePerMTok>,
-    pub output: PricePerMTok,
+    pub output:       PricePerMTok,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AnthropicModelPricing {
-    pub input: PricePerMTok,
-    pub cache_read: Option<PricePerMTok>,
+    pub input:          PricePerMTok,
+    pub cache_read:     Option<PricePerMTok>,
     pub cache_write_5m: Option<PricePerMTok>,
     pub cache_write_1h: Option<PricePerMTok>,
-    pub output: PricePerMTok,
+    pub output:         PricePerMTok,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GeminiStorageSegment {
     pub cached_tokens: i64,
-    pub ttl_seconds: i64,
+    pub ttl_seconds:   i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -243,11 +263,11 @@ pub struct GeminiStoragePricing {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GeminiModelPricing {
-    pub input: PricePerMTok,
-    pub output: PricePerMTok,
+    pub input:        PricePerMTok,
+    pub output:       PricePerMTok,
     pub cached_input: Option<PricePerMTok>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub storage: Option<GeminiStoragePricing>,
+    pub storage:      Option<GeminiStoragePricing>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -265,7 +285,7 @@ pub enum ModelPricingPolicy {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModelPricing {
-    pub model: ModelRef,
+    pub model:  ModelRef,
     pub policy: ModelPricingPolicy,
 }
 
@@ -324,7 +344,7 @@ pub struct ModelBillingInput {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BilledModelUsage {
-    pub input: ModelBillingInput,
+    pub input:            ModelBillingInput,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub total_usd_micros: Option<i64>,
 }
@@ -348,17 +368,17 @@ impl BilledModelUsage {
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct BilledTokenCounts {
-    pub input_tokens: i64,
-    pub output_tokens: i64,
-    pub total_tokens: i64,
+    pub input_tokens:       i64,
+    pub output_tokens:      i64,
+    pub total_tokens:       i64,
     #[serde(default)]
-    pub reasoning_tokens: i64,
+    pub reasoning_tokens:   i64,
     #[serde(default)]
-    pub cache_read_tokens: i64,
+    pub cache_read_tokens:  i64,
     #[serde(default)]
     pub cache_write_tokens: i64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub total_usd_micros: Option<i64>,
+    pub total_usd_micros:   Option<i64>,
 }
 
 impl BilledTokenCounts {
@@ -377,13 +397,13 @@ impl BilledTokenCounts {
         }
 
         Self {
-            input_tokens: tokens.input_tokens,
-            output_tokens: tokens.output_tokens,
-            total_tokens: tokens.total_tokens(),
-            reasoning_tokens: tokens.reasoning_tokens,
-            cache_read_tokens: tokens.cache_read_tokens,
+            input_tokens:       tokens.input_tokens,
+            output_tokens:      tokens.output_tokens,
+            total_tokens:       tokens.total_tokens(),
+            reasoning_tokens:   tokens.reasoning_tokens,
+            cache_read_tokens:  tokens.cache_read_tokens,
             cache_write_tokens: tokens.cache_write_tokens,
-            total_usd_micros: has_total.then_some(total_usd_micros),
+            total_usd_micros:   has_total.then_some(total_usd_micros),
         }
     }
 }
@@ -609,26 +629,26 @@ mod tests {
     #[test]
     fn openai_pricing_bills_cached_input_and_reasoning_output() {
         let pricing = ModelPricing {
-            model: ModelRef {
+            model:  ModelRef {
                 provider: Provider::OpenAi,
                 model_id: "gpt-5.4".to_string(),
-                speed: None,
+                speed:    None,
             },
             policy: ModelPricingPolicy::OpenAi(OpenAiModelPricing {
-                input: PricePerMTok {
+                input:        PricePerMTok {
                     usd_micros: 1_250_000,
                 },
                 cached_input: Some(PricePerMTok {
                     usd_micros: 125_000,
                 }),
-                output: PricePerMTok {
+                output:       PricePerMTok {
                     usd_micros: 10_000_000,
                 },
             }),
         };
         let input = ModelBillingInput {
             usage: ModelUsage {
-                model: pricing.model.clone(),
+                model:  pricing.model.clone(),
                 tokens: TokenCounts {
                     input_tokens: 500_000,
                     output_tokens: 125_000,
@@ -642,6 +662,33 @@ mod tests {
         };
 
         assert_eq!(pricing.bill(&input), Some(UsdMicros(2_156_250)));
+    }
+
+    #[test]
+    fn token_counts_aggregate_litellm_cost_and_fallback_metadata() {
+        let mut total = TokenCounts {
+            cost_usd: Some(0.10),
+            upstream_model: Some("first".to_string()),
+            cache_hit: Some(false),
+            upstream_fallbacks: vec!["fallback-a".to_string()],
+            ..TokenCounts::default()
+        };
+
+        total += TokenCounts {
+            cost_usd: Some(0.25),
+            upstream_model: Some("second".to_string()),
+            cache_hit: Some(true),
+            upstream_fallbacks: vec!["fallback-a".to_string(), "fallback-b".to_string()],
+            ..TokenCounts::default()
+        };
+
+        assert!((total.cost_usd.unwrap() - 0.35).abs() < f64::EPSILON);
+        assert_eq!(total.upstream_model.as_deref(), Some("first"));
+        assert_eq!(total.cache_hit, Some(true));
+        assert_eq!(total.upstream_fallbacks, vec![
+            "fallback-a".to_string(),
+            "fallback-b".to_string()
+        ]);
     }
 
     #[test]
@@ -663,16 +710,16 @@ mod tests {
     #[test]
     fn anthropic_billing_supports_distinct_cache_write_buckets() {
         let pricing = ModelPricing {
-            model: ModelRef {
+            model:  ModelRef {
                 provider: Provider::Anthropic,
                 model_id: "claude-opus-4-6".to_string(),
-                speed: Some(Speed::Fast),
+                speed:    Some(Speed::Fast),
             },
             policy: ModelPricingPolicy::Anthropic(AnthropicModelPricing {
-                input: PricePerMTok {
+                input:          PricePerMTok {
                     usd_micros: 30_000_000,
                 },
-                cache_read: Some(PricePerMTok {
+                cache_read:     Some(PricePerMTok {
                     usd_micros: 3_000_000,
                 }),
                 cache_write_5m: Some(PricePerMTok {
@@ -681,14 +728,14 @@ mod tests {
                 cache_write_1h: Some(PricePerMTok {
                     usd_micros: 60_000_000,
                 }),
-                output: PricePerMTok {
+                output:         PricePerMTok {
                     usd_micros: 150_000_000,
                 },
             }),
         };
         let input = ModelBillingInput {
             usage: ModelUsage {
-                model: pricing.model.clone(),
+                model:  pricing.model.clone(),
                 tokens: TokenCounts {
                     input_tokens: 100_000,
                     output_tokens: 10_000,
@@ -710,25 +757,25 @@ mod tests {
     #[test]
     fn gemini_billing_requires_storage_pricing_when_storage_facts_exist() {
         let pricing = ModelPricing {
-            model: ModelRef {
+            model:  ModelRef {
                 provider: Provider::Gemini,
                 model_id: "gemini-3.1-pro-preview".to_string(),
-                speed: None,
+                speed:    None,
             },
             policy: ModelPricingPolicy::Gemini(GeminiModelPricing {
-                input: PricePerMTok {
+                input:        PricePerMTok {
                     usd_micros: 1_250_000,
                 },
-                output: PricePerMTok {
+                output:       PricePerMTok {
                     usd_micros: 10_000_000,
                 },
                 cached_input: None,
-                storage: None,
+                storage:      None,
             }),
         };
         let input = ModelBillingInput {
             usage: ModelUsage {
-                model: pricing.model.clone(),
+                model:  pricing.model.clone(),
                 tokens: TokenCounts {
                     input_tokens: 100_000,
                     output_tokens: 10_000,
@@ -741,7 +788,7 @@ mod tests {
             facts: ModelBillingFacts::Gemini(GeminiBillingFacts {
                 storage_segments: vec![GeminiStorageSegment {
                     cached_tokens: 100_000,
-                    ttl_seconds: 60,
+                    ttl_seconds:   60,
                 }],
             }),
         };

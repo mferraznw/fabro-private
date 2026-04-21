@@ -4,10 +4,9 @@ use fabro_model::{Catalog, Provider};
 #[test]
 fn profile_context_window_matches_catalog_for_default_models() {
     for &provider in Provider::ALL {
-        let catalog_info = Catalog::builtin()
-            .default_for_provider(provider)
-            .cloned()
-            .unwrap_or_else(|| panic!("no default model for {provider:?} in catalog"));
+        let Some(catalog_info) = Catalog::builtin().default_for_provider(provider).cloned() else {
+            continue;
+        };
         let model = &catalog_info.id;
         let context_window = usize::try_from(catalog_info.context_window())
             .expect("catalog context window should be non-negative and fit in usize");

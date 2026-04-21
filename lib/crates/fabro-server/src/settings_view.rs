@@ -8,13 +8,13 @@
 //!
 //! ## What gets dropped
 //!
-//! Per the requirements doc, only the transport bind needs redaction now:
+//! Per the requirements doc, transport bind and in-band credentials need
+//! redaction now:
 //!
 //! - `server.listen` — the whole subtree. Bind address reveals network
 //!   topology; `[server.listen.tls]` cert/key paths reveal the host filesystem
 //!   layout.
-//!
-//! ## Why that's all
+//! - `llm.litellm.api_key` — plaintext virtual keys must not leave the server.
 //!
 //! The rest of the v2 tree is either:
 //!
@@ -25,8 +25,8 @@
 //!   wire payload surfaces `"Bearer {{ env.TOKEN }}"` instead of the resolved
 //!   secret value. No additional redaction pass is needed.
 //!
-//! Any future field that carries a raw secret in-band (without env
-//! interpolation) must be added to the drop list below.
+//! Any future field that carries a raw secret in-band must be added to the
+//! drop list below.
 
 use fabro_types::settings::{Settings, SettingsLayer};
 use serde::Deserialize;
@@ -34,7 +34,7 @@ use serde::Deserialize;
 pub(crate) const RESOLVED_VIEW_HEADER_NAME: &str = "X-Fabro-Settings-View";
 pub(crate) const RESOLVED_VIEW_HEADER_VALUE: &str = "resolved";
 
-const REDACTED_PATHS: &[&[&str]] = &[&["server", "listen"]];
+const REDACTED_PATHS: &[&[&str]] = &[&["server", "listen"], &["llm", "litellm", "api_key"]];
 
 #[derive(Debug, Clone, Copy, Default, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "lowercase")]
@@ -60,6 +60,9 @@ pub(crate) fn redact_for_api(settings: &SettingsLayer) -> SettingsLayer {
     if let Some(server) = out.server.as_mut() {
         // Bind address + TLS key/cert paths: host operational details.
         server.listen = None;
+    }
+    if let Some(litellm) = out.llm.as_mut().and_then(|llm| llm.litellm.as_mut()) {
+        litellm.api_key = None;
     }
 
     out
@@ -240,6 +243,28 @@ default_channel = "{{ env.SLACK_CHANNEL }}"
     }
 
     #[test]
+    fn redacts_plaintext_litellm_api_key() {
+        let settings = parse(
+            r#"
+_version = 1
+
+[llm.litellm]
+api_key = "project-key"
+api_key_env = "LITELLM_API_KEY"
+"#,
+        );
+
+        let redacted = redact_for_api(&settings);
+        let litellm = redacted
+            .llm
+            .and_then(|llm| llm.litellm)
+            .expect("litellm settings should remain");
+
+        assert!(litellm.api_key.is_none());
+        assert_eq!(litellm.api_key_env.as_deref(), Some("LITELLM_API_KEY"));
+    }
+
+    #[test]
     fn redacts_dense_resolved_settings_with_the_same_secret_paths() {
         let settings = parse(
             r#"
@@ -261,6 +286,10 @@ allowed_usernames = ["alice"]
 
 [server.storage]
 root = "{{ env.FABRO_STORAGE_ROOT }}"
+
+[llm.litellm]
+api_key = "project-key"
+api_key_env = "LITELLM_API_KEY"
 "#,
         );
 
@@ -269,6 +298,8 @@ root = "{{ env.FABRO_STORAGE_ROOT }}"
             redact_resolved_value(&resolved).expect("resolved settings should serialize");
 
         assert!(redacted["server"].get("listen").is_none());
+        assert!(redacted["llm"]["litellm"].get("api_key").is_none());
+        assert!(!redacted.to_string().contains("project-key"));
         assert_eq!(redacted["server"]["auth"]["methods"][0], "github");
         assert_eq!(
             redacted["server"]["auth"]["github"]["allowed_usernames"][0],
