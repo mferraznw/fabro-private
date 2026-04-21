@@ -12,6 +12,7 @@ use fabro_config::{effective_settings, parse_settings_layer};
 use fabro_graphviz::graph::{Graph, is_llm_handler_type};
 use fabro_graphviz::render::apply_direction;
 use fabro_llm::Provider;
+use fabro_llm::litellm_discovery::{LiteLlmDiscovery, LiteLlmModelsCache};
 use fabro_model::Catalog;
 use fabro_sandbox::config::{
     DaytonaNetwork, DaytonaSnapshotSettings, DockerfileSource as SandboxDockerfileSource,
@@ -28,6 +29,7 @@ use fabro_types::settings::run::{
 };
 use fabro_types::settings::{ServerSettings, SettingsLayer};
 use fabro_util::check_report::{CheckDetail, CheckReport, CheckResult, CheckSection, CheckStatus};
+use fabro_util::redact;
 use fabro_validate::Severity;
 use fabro_workflow::Error as WorkflowError;
 use fabro_workflow::operations::{CreateRunInput, ValidateInput, WorkflowInput, validate};
@@ -49,6 +51,7 @@ pub(crate) struct PreparedManifest {
     pub workflow_bundle:   WorkflowBundle,
     pub workflow_input:    BundledWorkflow,
     pub working_directory: PathBuf,
+    pub no_discovery:      bool,
 }
 
 pub(crate) fn prepare_manifest_with_mode(
@@ -114,6 +117,11 @@ pub(crate) fn prepare_manifest_with_mode(
         workflow_bundle,
         workflow_input,
         working_directory: resolve_working_directory(&settings, &cwd),
+        no_discovery: manifest
+            .args
+            .as_ref()
+            .and_then(|args| args.no_discovery)
+            .unwrap_or(false),
     })
 }
 
@@ -157,12 +165,141 @@ pub(crate) async fn run_preflight(
     prepared: &PreparedManifest,
     validated: &Validated,
 ) -> Result<(types::PreflightResponse, bool)> {
-    let (report, checks_ok) = build_preflight_report(state, prepared, validated).await?;
-    let preflight_ok = !validated.has_errors() && checks_ok;
+    let resolved = resolve_discovery_diagnostics(state, prepared, validated).await?;
+    let (report, checks_ok) = build_preflight_report(state, prepared, &resolved).await?;
+    let preflight_ok = !resolved.has_errors() && checks_ok;
     Ok((
-        preflight_response(validated, &prepared.target_path, &report, preflight_ok),
+        preflight_response(&resolved, &prepared.target_path, &report, preflight_ok),
         preflight_ok,
     ))
+}
+
+async fn resolve_discovery_diagnostics(
+    state: &AppState,
+    prepared: &PreparedManifest,
+    validated: &Validated,
+) -> Result<Validated> {
+    if prepared.no_discovery || !llm_discovery_enabled(&prepared.settings) {
+        return Ok(validated.clone_with_diagnostics(validated.diagnostics().to_vec()));
+    }
+
+    let diagnostics = validated.diagnostics();
+    if !diagnostics.iter().any(is_unknown_litellm_model_diagnostic) {
+        return Ok(validated.clone_with_diagnostics(diagnostics.to_vec()));
+    }
+
+    let discovery = litellm_discovery(state).await;
+    let mut resolved = Vec::with_capacity(diagnostics.len());
+    for diagnostic in diagnostics {
+        let Some(model) = unknown_litellm_model(diagnostic) else {
+            resolved.push(diagnostic.clone());
+            continue;
+        };
+
+        let discovery_result = match &discovery {
+            Ok(Some(discovery)) => discovery.discover_model(model).await,
+            Ok(None) => Err("LITELLM_BASE_URL is not configured".to_string()),
+            Err(err) => Err(err.to_string()),
+        };
+
+        match discovery_result {
+            Ok(Some(_model)) => resolved.push(fabro_validate::Diagnostic {
+                rule:     "model_discovered".to_string(),
+                severity: Severity::Info,
+                message:  format!("Discovered LiteLLM model '{model}' via runtime discovery"),
+                node_id:  diagnostic.node_id.clone(),
+                edge:     diagnostic.edge.clone(),
+                fix:      None,
+            }),
+            Ok(None) => resolved.push(discovery_warning(
+                diagnostic,
+                model,
+                "discovery did not find it",
+            )),
+            Err(err) => {
+                let err = redact::redact_string(&err);
+                resolved.push(discovery_warning(
+                    diagnostic,
+                    model,
+                    &format!("discovery failed: {err}"),
+                ));
+            }
+        }
+    }
+
+    Ok(validated.clone_with_diagnostics(resolved))
+}
+
+fn llm_discovery_enabled(settings: &SettingsLayer) -> bool {
+    settings
+        .llm
+        .as_ref()
+        .and_then(|llm| llm.discovery.as_ref())
+        .and_then(|discovery| discovery.enabled)
+        .unwrap_or_else(|| {
+            std::env::var("FABRO_LLM_DISCOVERY").map_or_else(
+                |_| std::env::var("LITELLM_BASE_URL").is_ok(),
+                |value| value != "off",
+            )
+        })
+}
+
+async fn litellm_discovery(state: &AppState) -> Result<Option<LiteLlmDiscovery>> {
+    let Some(base_url) = state.provider_credentials.get("LITELLM_BASE_URL").await else {
+        return Ok(None);
+    };
+    let mut guard = state.litellm_models_cache.lock().await;
+    let cache = if let Some(cache) = guard.as_ref() {
+        cache.clone()
+    } else {
+        let api_key = state
+            .provider_credentials
+            .get("LITELLM_API_KEY")
+            .await
+            .filter(|api_key| !api_key.is_empty() && api_key != "none");
+        let ttl = std::env::var("FABRO_LITELLM_MODELS_TTL")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .map_or(
+                std::time::Duration::from_secs(60),
+                std::time::Duration::from_secs,
+            );
+        let cache = LiteLlmModelsCache::new(base_url, api_key, ttl);
+        *guard = Some(cache.clone());
+        cache
+    };
+    Ok(Some(LiteLlmDiscovery::with_cache(cache)))
+}
+
+fn is_unknown_litellm_model_diagnostic(diagnostic: &fabro_validate::Diagnostic) -> bool {
+    unknown_litellm_model(diagnostic).is_some()
+}
+
+fn unknown_litellm_model(diagnostic: &fabro_validate::Diagnostic) -> Option<&str> {
+    if diagnostic.rule != "node_model_known" && diagnostic.rule != "stylesheet_model_known" {
+        return None;
+    }
+    diagnostic
+        .message
+        .strip_prefix("Unknown LiteLLM model '")?
+        .split_once('\'')
+        .map(|(model, _)| model)
+}
+
+fn discovery_warning(
+    diagnostic: &fabro_validate::Diagnostic,
+    model: &str,
+    reason: &str,
+) -> fabro_validate::Diagnostic {
+    let mut diagnostic = diagnostic.clone();
+    diagnostic.message = format!(
+        "Unknown LiteLLM model '{model}'; enable `[llm.discovery]` or add it to the catalog ({reason})"
+    );
+    diagnostic.fix = Some(
+        "Check LiteLLM discovery settings, run `fabro model discover <id>`, or use a statically cataloged model"
+            .to_string(),
+    );
+    diagnostic
 }
 
 pub(crate) fn graph_source(prepared: &PreparedManifest, direction: Option<&str>) -> String {
@@ -971,6 +1108,7 @@ root = "/srv/fabro"
             dry_run:          Some(true),
             label:            Vec::new(),
             model:            None,
+            no_discovery:     None,
             no_retro:         None,
             preserve_sandbox: None,
             provider:         None,
@@ -1150,5 +1288,131 @@ provider = "daytona"
                 .iter()
                 .any(|check| check.name == "Sandbox")
         );
+    }
+
+    #[tokio::test]
+    async fn preflight_discovers_litellm_model_before_warning() {
+        use httpmock::Method::GET;
+        use httpmock::MockServer;
+        use serde_json::json;
+
+        let server = MockServer::start_async().await;
+        let models_mock = server
+            .mock_async(|when, then| {
+                when.method(GET)
+                    .path("/v1/models")
+                    .header("authorization", "Bearer litellm-key");
+                then.status(200).json_body(json!({
+                    "object": "list",
+                    "data": [{ "id": "gemma-4-26b", "object": "model" }]
+                }));
+            })
+            .await;
+        let info_mock = server
+            .mock_async(|when, then| {
+                when.method(GET)
+                    .path("/model/info")
+                    .query_param("model", "gemma-4-26b")
+                    .header("authorization", "Bearer litellm-key");
+                then.status(200).json_body(json!({
+                    "model_info": {
+                        "context_window": 128_000,
+                        "supports_function_calling": true
+                    }
+                }));
+            })
+            .await;
+        let base_url = server.url("/v1");
+        let state = crate::server::create_app_state_with_env_lookup(
+            SettingsLayer::default(),
+            5,
+            move |name| match name {
+                "LITELLM_BASE_URL" => Some(base_url.clone()),
+                "LITELLM_API_KEY" => Some("litellm-key".to_string()),
+                _ => None,
+            },
+        );
+        let mut manifest = minimal_manifest();
+        manifest.workflows.get_mut("workflow.fabro").unwrap().source = r#"
+digraph Lite {
+  start [shape=Mdiamond]
+  gemma_check [shape=box, provider="litellm", model="gemma-4-26b", prompt="check"]
+  exit [shape=Msquare]
+  start -> gemma_check -> exit
+}
+"#
+        .to_string();
+        manifest.configs.push(types::ManifestConfig {
+            path:   Some("/tmp/project/.fabro/project.toml".to_string()),
+            source: Some("_version = 1\n[llm.discovery]\nenabled = true\n".to_string()),
+            type_:  types::ManifestConfigType::Project,
+        });
+
+        let prepared =
+            prepare_manifest_with_mode(&SettingsLayer::default(), &manifest, false).unwrap();
+        let validated = validate_prepared_manifest(&prepared).unwrap();
+        assert!(
+            validated
+                .diagnostics()
+                .iter()
+                .any(|diagnostic| diagnostic.rule == "node_model_known")
+        );
+
+        let (response, ok) = run_preflight(state.as_ref(), &prepared, &validated)
+            .await
+            .unwrap();
+
+        assert!(ok);
+        assert!(!response
+            .workflow
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.severity == types::WorkflowDiagnosticSeverity::Warning));
+        assert!(response.workflow.diagnostics.iter().any(|diagnostic| {
+            diagnostic.severity == types::WorkflowDiagnosticSeverity::Info
+                && diagnostic.rule == "model_discovered"
+                && diagnostic.message.contains("gemma-4-26b")
+        }));
+        models_mock.assert_async().await;
+        info_mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn preflight_no_discovery_keeps_static_litellm_warning() {
+        let state = crate::server::create_app_state();
+        let mut manifest = minimal_manifest();
+        manifest.args = Some(types::ManifestArgs {
+            no_discovery: Some(true),
+            ..types::ManifestArgs::default()
+        });
+        manifest.workflows.get_mut("workflow.fabro").unwrap().source = r#"
+digraph Lite {
+  start [shape=Mdiamond]
+  gemma_check [shape=box, provider="litellm", model="gemma-4-26b", prompt="check"]
+  exit [shape=Msquare]
+  start -> gemma_check -> exit
+}
+"#
+        .to_string();
+        manifest.configs.push(types::ManifestConfig {
+            path:   Some("/tmp/project/.fabro/project.toml".to_string()),
+            source: Some("_version = 1\n[llm.discovery]\nenabled = true\n".to_string()),
+            type_:  types::ManifestConfigType::Project,
+        });
+
+        let prepared =
+            prepare_manifest_with_mode(&SettingsLayer::default(), &manifest, false).unwrap();
+        let validated = validate_prepared_manifest(&prepared).unwrap();
+
+        let (response, ok) = run_preflight(state.as_ref(), &prepared, &validated)
+            .await
+            .unwrap();
+
+        assert!(!ok);
+        assert!(response.workflow.diagnostics.iter().any(|diagnostic| {
+            diagnostic.severity == types::WorkflowDiagnosticSeverity::Warning
+                && diagnostic.rule == "node_model_known"
+                && diagnostic.message.contains("Unknown LiteLLM model")
+        }));
     }
 }

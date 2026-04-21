@@ -305,3 +305,75 @@ fn list_uses_fabro_config_for_machine_settings() {
     assert_eq!(models.as_array().map(Vec::len), Some(1));
     assert_eq!(models[0]["id"].as_str(), Some("remote-model"));
 }
+
+#[test]
+fn list_discovered_reads_persisted_models_without_server() {
+    let context = test_context!();
+    let server = MockServer::start();
+    let models_mock = server.mock(|when, then| {
+        when.method("GET")
+            .path("/v1/models")
+            .header("authorization", "Bearer litellm-key");
+        then.status(200)
+            .header("Content-Type", "application/json")
+            .json_body(serde_json::json!({
+                "object": "list",
+                "data": [{ "id": "gemma-4-26b", "object": "model" }]
+            }));
+    });
+    let info_mock = server.mock(|when, then| {
+        when.method("GET")
+            .path("/model/info")
+            .query_param("model", "gemma-4-26b")
+            .header("authorization", "Bearer litellm-key");
+        then.status(200)
+            .header("Content-Type", "application/json")
+            .json_body(serde_json::json!({
+                "model_info": {
+                    "context_window": 128_000,
+                    "supports_function_calling": true
+                }
+            }));
+    });
+
+    let mut discover = context.model();
+    discover.current_dir(&context.temp_dir);
+    discover.args(["discover", "gemma-4-26b"]);
+    discover.env("LITELLM_BASE_URL", server.url("/v1"));
+    discover.env("LITELLM_API_KEY", "litellm-key");
+    discover.assert().success();
+
+    let mut discovered = context.model();
+    discovered.current_dir(&context.temp_dir);
+    discovered.args([
+        "--json",
+        "list",
+        "--discovered",
+        "--server",
+        "http://127.0.0.1:9/api/v1",
+    ]);
+    let output = discovered.assert().success().get_output().stdout.clone();
+    let models: serde_json::Value =
+        serde_json::from_slice(&output).expect("model list json should parse");
+    assert_eq!(models.as_array().map(Vec::len), Some(1));
+    assert_eq!(models[0]["id"].as_str(), Some("gemma-4-26b"));
+
+    let mut source = context.model();
+    source.current_dir(&context.temp_dir);
+    source.args([
+        "--json",
+        "list",
+        "--source",
+        "litellm",
+        "--server",
+        "http://127.0.0.1:9/api/v1",
+    ]);
+    let output = source.assert().success().get_output().stdout.clone();
+    let models: serde_json::Value =
+        serde_json::from_slice(&output).expect("model list json should parse");
+    assert_eq!(models.as_array().map(Vec::len), Some(1));
+    assert_eq!(models[0]["id"].as_str(), Some("gemma-4-26b"));
+
+    models_mock.assert();
+    info_mock.assert();
+}

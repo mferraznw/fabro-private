@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
@@ -30,21 +31,21 @@ enum ModelTestResultKind {
 
 #[derive(Serialize)]
 struct ModelTestRow {
-    model: String,
+    model:    String,
     provider: Provider,
-    result: ModelTestResultKind,
+    result:   ModelTestResultKind,
     #[serde(skip_serializing_if = "Option::is_none")]
-    detail: Option<String>,
+    detail:   Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    error: Option<String>,
+    error:    Option<String>,
 }
 
 #[derive(Serialize)]
 struct ModelTestOutput {
-    results: Vec<ModelTestRow>,
-    total: usize,
+    results:  Vec<ModelTestRow>,
+    total:    usize,
     failures: u32,
-    skipped: u32,
+    skipped:  u32,
 }
 
 pub(crate) async fn execute(
@@ -54,10 +55,12 @@ pub(crate) async fn execute(
     printer: Printer,
 ) -> Result<()> {
     let command = command.unwrap_or_default();
-    if matches!(
-        command,
-        ModelsCommand::Discover(_) | ModelsCommand::Forget(_)
-    ) {
+    let local_only = match &command {
+        ModelsCommand::Discover(_) | ModelsCommand::Forget(_) => true,
+        ModelsCommand::List(args) => should_list_models_locally(args)?,
+        ModelsCommand::Test(_) => false,
+    };
+    if local_only {
         return run_local_models(command, cli.output.format == OutputFormat::Json).await;
     }
     let target_args = match &command {
@@ -74,6 +77,16 @@ pub(crate) async fn execute(
         cli.output.format == OutputFormat::Json,
     )
     .await
+}
+
+fn should_list_models_locally(args: &ModelListArgs) -> Result<bool> {
+    if args.discovered {
+        return Ok(true);
+    }
+    if args.source.as_deref() == Some("litellm") {
+        return Ok(!read_discovered_models(&discovered_models_path())?.is_empty());
+    }
+    Ok(false)
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Default)]
@@ -121,7 +134,8 @@ async fn run_local_models(command: ModelsCommand, json_output: bool) -> Result<(
     match command {
         ModelsCommand::Discover(args) => discover_models(args, json_output).await,
         ModelsCommand::Forget(args) => forget_model(&args, json_output),
-        ModelsCommand::List(_) | ModelsCommand::Test(_) => unreachable!(),
+        ModelsCommand::List(args) => list_discovered_models(&args, json_output),
+        ModelsCommand::Test(_) => unreachable!(),
     }
 }
 
@@ -179,6 +193,51 @@ fn forget_model(args: &ModelForgetArgs, json_output: bool) -> Result<()> {
         );
     } else {
         println!("Removed {removed} model(s)");
+    }
+    Ok(())
+}
+
+fn filtered_discovered_models(args: &ModelListArgs) -> Result<Vec<Model>> {
+    let provider = args
+        .provider
+        .as_deref()
+        .map(Provider::from_str)
+        .transpose()
+        .map_err(anyhow::Error::msg)?;
+    Ok(read_discovered_models(&discovered_models_path())?
+        .into_iter()
+        .filter(|_| {
+            args.source
+                .as_deref()
+                .is_none_or(|source| source == "litellm")
+        })
+        .filter(|model| provider.is_none_or(|provider| model.provider == provider))
+        .filter(|model| {
+            args.query.as_ref().is_none_or(|query| {
+                let query = query.to_lowercase();
+                model.id.to_lowercase().contains(&query)
+                    || model.display_name.to_lowercase().contains(&query)
+                    || model
+                        .aliases
+                        .iter()
+                        .any(|alias| alias.to_lowercase().contains(&query))
+            })
+        })
+        .collect())
+}
+
+#[allow(clippy::print_stderr, clippy::print_stdout)]
+fn list_discovered_models(args: &ModelListArgs, json_output: bool) -> Result<()> {
+    let models = filtered_discovered_models(args)?;
+    if json_output {
+        println!("{}", serde_json::to_string_pretty(&models)?);
+    } else {
+        if models.is_empty() {
+            eprintln!(
+                "No persisted discoveries; use `--source litellm` with a running server to list runtime-cached entries"
+            );
+        }
+        print_models_table(&models, &Styles::detect_stdout());
     }
     Ok(())
 }
@@ -279,25 +338,25 @@ fn model_test_row_from_status(model: &Model, status: &str, result_color: Color) 
     let trimmed = status.trim();
     match result_color {
         Color::Green => ModelTestRow {
-            model: model.id.clone(),
+            model:    model.id.clone(),
             provider: model.provider,
-            result: ModelTestResultKind::Pass,
-            detail: None,
-            error: None,
+            result:   ModelTestResultKind::Pass,
+            detail:   None,
+            error:    None,
         },
         Color::Yellow => ModelTestRow {
-            model: model.id.clone(),
+            model:    model.id.clone(),
             provider: model.provider,
-            result: ModelTestResultKind::Skip,
-            detail: Some(trimmed.to_string()),
-            error: None,
+            result:   ModelTestResultKind::Skip,
+            detail:   Some(trimmed.to_string()),
+            error:    None,
         },
         _ => ModelTestRow {
-            model: model.id.clone(),
+            model:    model.id.clone(),
             provider: model.provider,
-            result: ModelTestResultKind::Fail,
-            detail: None,
-            error: Some(
+            result:   ModelTestResultKind::Fail,
+            detail:   None,
+            error:    Some(
                 trimmed
                     .strip_prefix("error: ")
                     .unwrap_or(trimmed)
@@ -548,23 +607,13 @@ async fn run_models(
             ..
         }) => {
             let models = if discovered {
-                let source = source.as_deref();
-                read_discovered_models(&discovered_models_path())?
-                    .into_iter()
-                    .filter(|_| source.is_none_or(|source| source == "litellm"))
-                    .filter(|model| {
-                        provider
-                            .as_deref()
-                            .is_none_or(|provider| model.provider.to_string() == provider)
-                    })
-                    .filter(|model| {
-                        query.as_ref().is_none_or(|query| {
-                            let query = query.to_lowercase();
-                            model.id.to_lowercase().contains(&query)
-                                || model.display_name.to_lowercase().contains(&query)
-                        })
-                    })
-                    .collect()
+                filtered_discovered_models(&ModelListArgs {
+                    provider,
+                    query,
+                    discovered,
+                    source,
+                    ..ModelListArgs::default()
+                })?
             } else {
                 let provider = source
                     .as_deref()
@@ -625,19 +674,19 @@ mod tests {
             display_name: format!("{id} display"),
             limits: ModelLimits {
                 context_window: 128_000,
-                max_output: Some(4096),
+                max_output:     Some(4096),
             },
             training: None,
             knowledge_cutoff: None,
             features: ModelFeatures {
-                tools: true,
-                vision: false,
+                tools:     true,
+                vision:    false,
                 reasoning: false,
-                effort: false,
+                effort:    false,
             },
             costs: ModelCosts {
-                input_cost_per_mtok: Some(1.0),
-                output_cost_per_mtok: Some(2.0),
+                input_cost_per_mtok:       Some(1.0),
+                output_cost_per_mtok:      Some(2.0),
                 cache_input_cost_per_mtok: None,
             },
             estimated_output_tps: Some(100.0),

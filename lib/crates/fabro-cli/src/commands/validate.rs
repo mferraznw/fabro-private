@@ -1,4 +1,5 @@
 use anyhow::bail;
+use fabro_api::types::ManifestArgs;
 use fabro_config::load::load_settings_user;
 use fabro_config::user::active_settings_path;
 use fabro_types::settings::cli::{CliLayer, OutputFormat};
@@ -24,7 +25,10 @@ pub(crate) async fn run(
         workflow:           args.workflow.clone(),
         cwd:                ctx.cwd().to_path_buf(),
         args_layer:         SettingsLayer::default(),
-        args:               None,
+        args:               args.no_discovery.then(|| ManifestArgs {
+            no_discovery: Some(true),
+            ..ManifestArgs::default()
+        }),
         run_id:             None,
         user_layer:         load_settings_user()?,
         user_settings_path: Some(active_settings_path(None)),

@@ -2188,6 +2188,8 @@ components:
           type: boolean
         no_retro:
           type: boolean
+        no_discovery:
+          type: boolean
         preserve_sandbox:
           type: boolean
         label:

@@ -195,6 +195,10 @@ pub(crate) struct RunArgs {
     #[arg(long)]
     pub(crate) no_retro: bool,
 
+    /// Disable runtime model discovery during validation/preflight
+    #[arg(long)]
+    pub(crate) no_discovery: bool,
+
     /// Keep the sandbox alive after the run finishes (for debugging)
     #[arg(long)]
     pub(crate) preserve_sandbox: bool,
@@ -239,6 +243,10 @@ pub(crate) struct PreflightArgs {
     /// Sandbox for agent tools
     #[arg(long, value_enum)]
     pub(crate) sandbox: Option<CliSandboxProvider>,
+
+    /// Disable runtime model discovery during validation/preflight
+    #[arg(long)]
+    pub(crate) no_discovery: bool,
 }
 
 #[derive(Args)]
@@ -297,17 +305,17 @@ pub(crate) struct LogsArgs {
     pub(crate) server: ServerTargetArgs,
 
     /// Run ID prefix or workflow name (most recent run)
-    pub(crate) run: String,
+    pub(crate) run:    String,
     /// Follow log output
     #[arg(short, long)]
     pub(crate) follow: bool,
     /// Logs since timestamp or relative (e.g. "42m", "2h",
     /// "2026-01-02T13:00:00Z")
     #[arg(long)]
-    pub(crate) since: Option<String>,
+    pub(crate) since:  Option<String>,
     /// Lines from end (default: all)
     #[arg(short = 'n', long)]
-    pub(crate) tail: Option<usize>,
+    pub(crate) tail:   Option<usize>,
     /// Formatted colored output with rendered assistant text
     #[arg(short = 'p', long)]
     pub(crate) pretty: bool,
@@ -320,6 +328,10 @@ pub(crate) struct ValidateArgs {
 
     /// Path to the .fabro workflow file
     pub(crate) workflow: PathBuf,
+
+    /// Disable runtime model discovery during validation
+    #[arg(long)]
+    pub(crate) no_discovery: bool,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -428,9 +440,9 @@ pub(crate) struct CpArgs {
     pub(crate) server: ServerTargetArgs,
 
     /// Source: <run-id>:<path> or local path
-    pub(crate) src: String,
+    pub(crate) src:       String,
     /// Destination: <run-id>:<path> or local path
-    pub(crate) dst: String,
+    pub(crate) dst:       String,
     /// Recurse into directories
     #[arg(short, long)]
     pub(crate) recursive: bool,
@@ -442,18 +454,18 @@ pub(crate) struct PreviewArgs {
     pub(crate) server: ServerTargetArgs,
 
     /// Run ID or prefix
-    pub(crate) run: String,
+    pub(crate) run:    String,
     /// Port number
-    pub(crate) port: u16,
+    pub(crate) port:   u16,
     /// Generate a signed URL (embeds auth token, no headers needed)
     #[arg(long)]
     pub(crate) signed: bool,
     /// Signed URL expiry in seconds (default 3600, requires --signed)
     #[arg(long, default_value = "3600", requires = "signed")]
-    pub(crate) ttl: i32,
+    pub(crate) ttl:    i32,
     /// Open URL in browser (implies --signed)
     #[arg(long)]
-    pub(crate) open: bool,
+    pub(crate) open:   bool,
 }
 
 #[derive(Args)]
@@ -462,10 +474,10 @@ pub(crate) struct SshArgs {
     pub(crate) server: ServerTargetArgs,
 
     /// Run ID or prefix
-    pub(crate) run: String,
+    pub(crate) run:   String,
     /// SSH access expiry in minutes (default 60)
     #[arg(long, default_value = "60")]
-    pub(crate) ttl: f64,
+    pub(crate) ttl:   f64,
     /// Print the SSH command instead of connecting
     #[arg(long)]
     pub(crate) print: bool,
@@ -477,7 +489,7 @@ pub(crate) struct DiffArgs {
     pub(crate) server: ServerTargetArgs,
 
     /// Run ID or prefix
-    pub(crate) run: String,
+    pub(crate) run:  String,
     /// Show diff for a specific node
     #[arg(long)]
     pub(crate) node: Option<String>,
@@ -523,14 +535,14 @@ pub(crate) enum SecretTypeArg {
 #[derive(Args)]
 pub(crate) struct SecretSetArgs {
     /// Name of the secret
-    pub(crate) key: String,
+    pub(crate) key:         String,
     /// Value to store (omit to enter interactively)
-    pub(crate) value: Option<String>,
+    pub(crate) value:       Option<String>,
     /// Read the secret value from stdin
     #[arg(long, conflicts_with = "value")]
     pub(crate) value_stdin: bool,
     #[arg(long, value_enum, default_value = "environment")]
-    pub(crate) r#type: SecretTypeArg,
+    pub(crate) r#type:      SecretTypeArg,
     #[arg(long)]
     pub(crate) description: Option<String>,
 }
@@ -709,10 +721,10 @@ pub(crate) struct PrCreateArgs {
     pub(crate) run_id: String,
     /// LLM model for generating PR description
     #[arg(long)]
-    pub(crate) model: Option<String>,
+    pub(crate) model:  Option<String>,
     /// Create PR even if the run status is not success/partial_success
     #[arg(short, long)]
-    pub(crate) force: bool,
+    pub(crate) force:  bool,
 }
 
 #[derive(Args)]
@@ -1028,7 +1040,7 @@ pub(crate) enum Commands {
     /// Set up the Fabro environment (LLMs, certs, GitHub)
     Install {
         #[command(flatten)]
-        args: InstallArgs,
+        args:    InstallArgs,
         #[command(subcommand)]
         command: Option<InstallCommand>,
     },

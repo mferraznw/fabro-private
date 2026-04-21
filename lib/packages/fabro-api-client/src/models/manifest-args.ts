@@ -25,7 +25,7 @@ export interface ManifestArgs {
     'dry_run'?: boolean;
     'auto_approve'?: boolean;
     'no_retro'?: boolean;
+    'no_discovery'?: boolean;
     'preserve_sandbox'?: boolean;
     'label'?: Array<string>;
 }
-

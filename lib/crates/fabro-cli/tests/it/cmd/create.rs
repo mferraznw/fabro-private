@@ -52,6 +52,7 @@ fn help() {
           --sandbox <SANDBOX>      Sandbox for agent tools [possible values: local, docker, daytona]
           --label <KEY=VALUE>      Attach a label to this run (repeatable, format: KEY=VALUE)
           --no-retro               Skip retro generation after the run
+          --no-discovery           Disable runtime model discovery during validation/preflight
           --preserve-sandbox       Keep the sandbox alive after the run finishes (for debugging)
       -d, --detach                 Run the workflow in the background and print the run ID
       -h, --help                   Print help

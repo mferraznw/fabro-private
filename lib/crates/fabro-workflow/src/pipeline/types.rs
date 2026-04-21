@@ -80,6 +80,15 @@ impl Validated {
         &self.diagnostics
     }
 
+    #[must_use]
+    pub fn clone_with_diagnostics(&self, diagnostics: Vec<Diagnostic>) -> Self {
+        Self {
+            graph: self.graph.clone(),
+            source: self.source.clone(),
+            diagnostics,
+        }
+    }
+
     /// True if any diagnostic has Error severity.
     #[must_use]
     pub fn has_errors(&self) -> bool {

@@ -31,6 +31,7 @@ fn help() {
           --provider <PROVIDER>    Override default LLM provider
       -v, --verbose                Enable verbose output
           --sandbox <SANDBOX>      Sandbox for agent tools [possible values: local, docker, daytona]
+          --no-discovery           Disable runtime model discovery during validation/preflight
       -h, --help                   Print help
     ----- stderr -----
     ");
