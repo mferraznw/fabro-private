@@ -19,5 +19,12 @@ digraph LiteLLMSmoke {
         prompt="Return exactly one short sentence starting with GEMMA_OK that says Fabro reached gemma-4-26b through LiteLLM."
     ]
 
-    start -> qwen_check -> gemma_check -> exit
+    spark_gemma_check [
+        label="Spark Gemma 4 26B",
+        provider="litellm",
+        model="spark/gemma-4-26b",
+        prompt="Return exactly one short sentence starting with SPARK_GEMMA_OK that says Fabro reached spark/gemma-4-26b through LiteLLM."
+    ]
+
+    start -> qwen_check -> gemma_check -> spark_gemma_check -> exit
 }
