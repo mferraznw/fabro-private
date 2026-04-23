@@ -20,7 +20,9 @@ fn help() {
           --provider <PROVIDER>  LLM provider to authenticate with
           --api-key-stdin        Read an API key from stdin instead of prompting
           --no-upgrade-check     Disable automatic upgrade check [env: FABRO_NO_UPGRADE_CHECK=true]
+          --api-key <KEY>        API key to use directly (alternative to --api-key-stdin)
           --quiet                Suppress non-essential output [env: FABRO_QUIET=]
+          --base-url <URL>       Base URL override for providers that require it (e.g. LiteLLM openai_compatible)
           --verbose              Enable verbose output [env: FABRO_VERBOSE=]
       -h, --help                 Print help
     ----- stderr -----

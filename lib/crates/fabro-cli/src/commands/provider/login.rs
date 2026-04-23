@@ -32,6 +32,15 @@ pub(super) async fn login_command(
             printer,
         )
         .await?
+    } else if let Some(key) = args.api_key {
+        provider_auth::authenticate_provider_with_api_key_source_and_base_url(
+            args.provider,
+            provider_auth::ApiKeySource::Inline(key),
+            base_url.as_deref(),
+            &s,
+            printer,
+        )
+        .await?
     } else {
         provider_auth::authenticate_provider(args.provider, &s, printer).await?
     };

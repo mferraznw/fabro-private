@@ -63,6 +63,7 @@ pub(crate) enum ApiKeySource {
     Prompt,
     Stdin,
     EnvVar(String),
+    Inline(String),
 }
 
 // ---------------------------------------------------------------------------
@@ -155,6 +156,7 @@ async fn read_api_key_from_source(source: &ApiKeySource, prompt: &str) -> Result
         }
         ApiKeySource::Stdin => spawn_blocking(read_api_key_from_stdin).await?,
         ApiKeySource::EnvVar(name) => read_api_key_from_env_var(name),
+        ApiKeySource::Inline(key) => Ok(key.clone()),
     }
 }
 

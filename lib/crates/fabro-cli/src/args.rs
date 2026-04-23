@@ -644,6 +644,10 @@ pub(crate) struct ProviderLoginArgs {
     #[arg(long)]
     pub(crate) api_key_stdin: bool,
 
+    /// API key to use directly (alternative to --api-key-stdin)
+    #[arg(long, value_name = "KEY")]
+    pub(crate) api_key: Option<String>,
+
     /// Base URL override for providers that require it (e.g. LiteLLM openai_compatible).
     #[arg(long, value_name = "URL")]
     pub(crate) base_url: Option<String>,
