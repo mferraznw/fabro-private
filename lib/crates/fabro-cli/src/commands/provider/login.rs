@@ -22,10 +22,12 @@ pub(super) async fn login_command(
     let s = Styles::detect_stderr();
     let ctx = CommandContext::for_target(&args.target, printer, cli.clone(), cli_layer)?;
     let server = ctx.server().await?;
+    let base_url = args.base_url.clone();
     let credential = if args.api_key_stdin {
-        provider_auth::authenticate_provider_with_api_key_source(
+        provider_auth::authenticate_provider_with_api_key_source_and_base_url(
             args.provider,
             provider_auth::ApiKeySource::Stdin,
+            base_url.as_deref(),
             &s,
             printer,
         )
@@ -33,6 +35,10 @@ pub(super) async fn login_command(
     } else {
         provider_auth::authenticate_provider(args.provider, &s, printer).await?
     };
+    let mut credential = credential;
+    if let Some(url) = base_url {
+        credential.base_url = Some(url);
+    }
     let credential_id = credential_id_for(&credential).map_err(anyhow::Error::msg)?;
     let value = serde_json::to_string(&credential)?;
 

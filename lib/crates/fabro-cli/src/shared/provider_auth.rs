@@ -11,6 +11,7 @@ use fabro_auth::{
 };
 use fabro_llm::client::Client as LlmClient;
 use fabro_llm::generate::{GenerateParams, generate};
+use fabro_llm::litellm_discovery::LiteLlmModelsCache;
 use fabro_model::{Catalog, Provider};
 use fabro_util::printer::Printer;
 use fabro_util::terminal::Styles;
@@ -68,7 +69,24 @@ pub(crate) enum ApiKeySource {
 // API key validation
 // ---------------------------------------------------------------------------
 
-pub(crate) async fn validate_api_key(provider: Provider, api_key: &str) -> Result<(), String> {
+pub(crate) async fn validate_api_key(
+    provider: Provider,
+    api_key: &str,
+    base_url: Option<&str>,
+) -> Result<(), String> {
+    if provider == Provider::OpenAiCompatible {
+        let base_url = base_url
+            .ok_or_else(|| "LITELLM_BASE_URL is required for provider 'litellm'".to_string())?;
+        return LiteLlmModelsCache::new(
+            base_url,
+            Some(api_key.to_string()),
+            std::time::Duration::from_secs(30),
+        )
+        .model_ids()
+        .await
+        .map(|_| ());
+    }
+
     let auth_header = if provider == Provider::Anthropic {
         ApiKeyHeader::Custom {
             name: "x-api-key".to_string(),
@@ -81,7 +99,7 @@ pub(crate) async fn validate_api_key(provider: Provider, api_key: &str) -> Resul
         provider,
         auth_header,
         extra_headers: std::collections::HashMap::new(),
-        base_url: None,
+        base_url: base_url.map(str::to_string),
         codex_mode: false,
         org_id: None,
         project_id: None,
@@ -144,6 +162,7 @@ async fn read_and_validate_api_key(
     provider: Provider,
     source: &ApiKeySource,
     env_var: &str,
+    base_url: Option<&str>,
     s: &Styles,
     printer: Printer,
 ) -> Result<String> {
@@ -151,7 +170,7 @@ async fn read_and_validate_api_key(
         let key = read_api_key_from_source(source, env_var).await?;
 
         fabro_util::printerr!(printer, "  {}", s.dim.apply_to("Validating API key..."));
-        match validate_api_key(provider, &key).await {
+        match validate_api_key(provider, &key, base_url).await {
             Ok(()) => {
                 fabro_util::printerr!(printer, "  {} API key is valid", s.green.apply_to("✔"));
                 return Ok(key);
@@ -203,10 +222,20 @@ pub(crate) async fn authenticate_provider_with_api_key_source(
     s: &Styles,
     printer: Printer,
 ) -> Result<AuthCredential> {
+    authenticate_provider_with_api_key_source_and_base_url(provider, source, None, s, printer).await
+}
+
+pub(crate) async fn authenticate_provider_with_api_key_source_and_base_url(
+    provider: Provider,
+    source: ApiKeySource,
+    base_url: Option<&str>,
+    s: &Styles,
+    printer: Printer,
+) -> Result<AuthCredential> {
     let mut strategy = strategy_for(provider, AuthMethod::ApiKey);
     let request = strategy.init().await?;
     present_to_user(&request, s, printer);
-    let response = await_user_response_from_source(&request, &source, s, printer).await?;
+    let response = await_user_response_from_source(&request, &source, base_url, s, printer).await?;
     strategy.complete(response).await
 }
 
@@ -220,7 +249,7 @@ pub(crate) async fn authenticate_provider_with_method(
     let request = strategy.init().await?;
     present_to_user(&request, s, printer);
     let response =
-        await_user_response_from_source(&request, &ApiKeySource::Prompt, s, printer).await?;
+        await_user_response_from_source(&request, &ApiKeySource::Prompt, None, s, printer).await?;
     strategy.complete(response).await
 }
 
@@ -268,6 +297,7 @@ pub(crate) fn present_to_user(request: &AuthContextRequest, s: &Styles, printer:
 async fn await_user_response_from_source(
     request: &AuthContextRequest,
     source: &ApiKeySource,
+    base_url: Option<&str>,
     s: &Styles,
     printer: Printer,
 ) -> Result<AuthContextResponse> {
@@ -277,7 +307,8 @@ async fn await_user_response_from_source(
             env_var_names,
         } => {
             let env_var = env_var_names.first().map_or("API_KEY", String::as_str);
-            let key = read_and_validate_api_key(*provider, source, env_var, s, printer).await?;
+            let key =
+                read_and_validate_api_key(*provider, source, env_var, base_url, s, printer).await?;
             Ok(AuthContextResponse::ApiKey { key })
         }
         AuthContextRequest::DeviceCode { .. } => {
@@ -320,7 +351,7 @@ mod tests {
 
     #[fabro_macros::e2e_test(live("ANTHROPIC_API_KEY"))]
     async fn validate_api_key_rejects_invalid_key() {
-        let result = validate_api_key(Provider::Anthropic, "sk-invalid-key-12345").await;
+        let result = validate_api_key(Provider::Anthropic, "sk-invalid-key-12345", None).await;
         assert!(result.is_err(), "expected invalid key to be rejected");
     }
 

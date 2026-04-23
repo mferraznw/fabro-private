@@ -5,8 +5,10 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AuthCredential {
     pub provider: Provider,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_url: Option<String>,
     #[serde(flatten)]
-    pub details:  AuthDetails,
+    pub details: AuthDetails,
 }
 
 impl AuthCredential {
@@ -28,8 +30,8 @@ pub enum AuthDetails {
         key: String,
     },
     CodexOAuth {
-        tokens:     OAuthTokens,
-        config:     OAuthConfig,
+        tokens: OAuthTokens,
+        config: OAuthConfig,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         account_id: Option<String>,
     },
@@ -37,9 +39,9 @@ pub enum AuthDetails {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct OAuthTokens {
-    pub access_token:  String,
+    pub access_token: String,
     pub refresh_token: Option<String>,
-    pub expires_at:    DateTime<Utc>,
+    pub expires_at: DateTime<Utc>,
 }
 
 pub(crate) fn expires_at_from_now(expires_in: Option<u64>) -> DateTime<Utc> {
@@ -49,12 +51,12 @@ pub(crate) fn expires_at_from_now(expires_in: Option<u64>) -> DateTime<Utc> {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct OAuthConfig {
-    pub auth_url:     String,
-    pub token_url:    String,
-    pub client_id:    String,
-    pub scopes:       Vec<String>,
+    pub auth_url: String,
+    pub token_url: String,
+    pub client_id: String,
+    pub scopes: Vec<String>,
     pub redirect_uri: Option<String>,
-    pub use_pkce:     bool,
+    pub use_pkce: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -95,19 +97,20 @@ mod tests {
     fn oauth_credential(expires_at: DateTime<Utc>) -> AuthCredential {
         AuthCredential {
             provider: Provider::OpenAi,
-            details:  AuthDetails::CodexOAuth {
-                tokens:     OAuthTokens {
+            base_url: None,
+            details: AuthDetails::CodexOAuth {
+                tokens: OAuthTokens {
                     access_token: "access".to_string(),
                     refresh_token: Some("refresh".to_string()),
                     expires_at,
                 },
-                config:     OAuthConfig {
-                    auth_url:     "https://auth.openai.com".to_string(),
-                    token_url:    "https://auth.openai.com/oauth/token".to_string(),
-                    client_id:    "client".to_string(),
-                    scopes:       vec!["openid".to_string()],
+                config: OAuthConfig {
+                    auth_url: "https://auth.openai.com".to_string(),
+                    token_url: "https://auth.openai.com/oauth/token".to_string(),
+                    client_id: "client".to_string(),
+                    scopes: vec!["openid".to_string()],
                     redirect_uri: Some("https://auth.openai.com/deviceauth/callback".to_string()),
-                    use_pkce:     true,
+                    use_pkce: true,
                 },
                 account_id: Some("acct_123".to_string()),
             },
@@ -138,7 +141,8 @@ mod tests {
     fn credential_id_for_openai_api_key() {
         let credential = AuthCredential {
             provider: Provider::OpenAi,
-            details:  AuthDetails::ApiKey {
+            base_url: None,
+            details: AuthDetails::ApiKey {
                 key: "sk-test".to_string(),
             },
         };

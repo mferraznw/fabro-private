@@ -45,7 +45,15 @@ pub(crate) fn normalize_logical_path(current_dir: &Path, reference: &str) -> Opt
             Component::CurDir => {}
             Component::Normal(part) => normalized.push(part),
             Component::ParentDir => {
-                normalized.pop();
+                if normalized
+                    .components()
+                    .next_back()
+                    .is_some_and(|component| matches!(component, Component::Normal(_)))
+                {
+                    normalized.pop();
+                } else {
+                    normalized.push("..");
+                }
             }
             Component::RootDir | Component::Prefix(_) => return None,
         }
@@ -138,6 +146,26 @@ mod tests {
             .expect("file should resolve");
 
         assert_eq!(resolved.logical_path, PathBuf::from("prompts/review.md"));
+    }
+
+    #[test]
+    fn bundle_resolver_preserves_leading_parent_segments() {
+        let resolver = BundleFileResolver::new(HashMap::from([(
+            PathBuf::from("../outside/workflow/prompts/review.md"),
+            "check it".to_string(),
+        )]));
+
+        let resolved = resolver
+            .resolve(
+                Path::new("../outside/workflow"),
+                "prompts/review.md",
+            )
+            .expect("file should resolve");
+
+        assert_eq!(
+            resolved.logical_path,
+            PathBuf::from("../outside/workflow/prompts/review.md")
+        );
     }
 
     #[test]

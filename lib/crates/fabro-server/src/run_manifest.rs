@@ -245,29 +245,19 @@ fn llm_discovery_enabled(settings: &SettingsLayer) -> bool {
 }
 
 async fn litellm_discovery(state: &AppState) -> Result<Option<LiteLlmDiscovery>> {
-    let Some(base_url) = state.provider_credentials.get("LITELLM_BASE_URL").await else {
+    let Some(credentials) = state.provider_credentials.litellm_credentials().await? else {
         return Ok(None);
     };
     let mut guard = state.litellm_models_cache.lock().await;
-    let cache = if let Some(cache) = guard.as_ref() {
-        cache.clone()
-    } else {
-        let api_key = state
-            .provider_credentials
-            .get("LITELLM_API_KEY")
-            .await
-            .filter(|api_key| !api_key.is_empty() && api_key != "none");
-        let ttl = std::env::var("FABRO_LITELLM_MODELS_TTL")
-            .ok()
-            .and_then(|value| value.parse::<u64>().ok())
-            .map_or(
-                std::time::Duration::from_secs(60),
-                std::time::Duration::from_secs,
-            );
-        let cache = LiteLlmModelsCache::new(base_url, api_key, ttl);
-        *guard = Some(cache.clone());
-        cache
-    };
+    let ttl = std::env::var("FABRO_LITELLM_MODELS_TTL")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .map_or(
+            std::time::Duration::from_secs(60),
+            std::time::Duration::from_secs,
+        );
+    let cache = LiteLlmModelsCache::new(credentials.base_url, credentials.api_key, ttl);
+    *guard = Some(cache.clone());
     Ok(Some(LiteLlmDiscovery::with_cache(cache)))
 }
 
@@ -766,7 +756,7 @@ async fn run_llm_check(
                             status = CheckStatus::Warning;
                             all_ok = false;
                             Some(auth_issue_message(provider, issue))
-                        } else if !configured.iter().any(|name| name == provider_name) {
+                        } else if !provider_registered(provider, provider_name, &configured) {
                             status = CheckStatus::Warning;
                             all_ok = false;
                             Some(format!("Provider \"{provider_name}\" is not configured"))
@@ -810,6 +800,14 @@ async fn run_llm_check(
             false
         }
     }
+}
+
+fn provider_registered(provider: Provider, provider_name: &str, configured: &[String]) -> bool {
+    configured.iter().any(|name| name == provider_name)
+        || (provider == Provider::OpenAiCompatible
+            && configured
+                .iter()
+                .any(|name| matches!(name.as_str(), "litellm" | "openai_compatible")))
 }
 
 fn resolve_model_provider(
@@ -1373,6 +1371,80 @@ digraph Lite {
                 && diagnostic.rule == "model_discovered"
                 && diagnostic.message.contains("gemma-4-26b")
         }));
+        models_mock.assert_async().await;
+        info_mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn preflight_accepts_openai_compatible_alias_when_litellm_adapter_registered() {
+        use httpmock::Method::GET;
+        use httpmock::MockServer;
+        use serde_json::json;
+
+        let server = MockServer::start_async().await;
+        let models_mock = server
+            .mock_async(|when, then| {
+                when.method(GET)
+                    .path("/v1/models")
+                    .header("authorization", "Bearer litellm-key");
+                then.status(200).json_body(json!({
+                    "object": "list",
+                    "data": [{ "id": "gemma-4-26b", "object": "model" }]
+                }));
+            })
+            .await;
+        let info_mock = server
+            .mock_async(|when, then| {
+                when.method(GET)
+                    .path("/model/info")
+                    .query_param("model", "gemma-4-26b")
+                    .header("authorization", "Bearer litellm-key");
+                then.status(200).json_body(json!({
+                    "model_info": { "context_window": 128_000 }
+                }));
+            })
+            .await;
+        let base_url = server.url("/v1");
+        let state = crate::server::create_app_state_with_env_lookup(
+            SettingsLayer::default(),
+            5,
+            move |name| match name {
+                "LITELLM_BASE_URL" => Some(base_url.clone()),
+                "LITELLM_API_KEY" => Some("litellm-key".to_string()),
+                _ => None,
+            },
+        );
+        let mut manifest = minimal_manifest();
+        manifest.workflows.get_mut("workflow.fabro").unwrap().source = r#"
+digraph Lite {
+  start [shape=Mdiamond]
+  gemma_check [shape=box, provider="openai_compatible", model="gemma-4-26b", prompt="check"]
+  exit [shape=Msquare]
+  start -> gemma_check -> exit
+}
+"#
+        .to_string();
+        manifest.configs.push(types::ManifestConfig {
+            path:   Some("/tmp/project/.fabro/project.toml".to_string()),
+            source: Some("_version = 1\n[llm.discovery]\nenabled = true\n".to_string()),
+            type_:  types::ManifestConfigType::Project,
+        });
+
+        let prepared =
+            prepare_manifest_with_mode(&SettingsLayer::default(), &manifest, false).unwrap();
+        let validated = validate_prepared_manifest(&prepared).unwrap();
+        let (response, ok) = run_preflight(state.as_ref(), &prepared, &validated)
+            .await
+            .unwrap();
+
+        assert!(ok);
+        assert!(!response
+            .checks
+            .sections
+            .iter()
+            .flat_map(|section| &section.checks)
+            .filter_map(|check| check.remediation.as_deref())
+            .any(|message| message.contains("Provider \"openai_compatible\" is not configured")));
         models_mock.assert_async().await;
         info_mock.assert_async().await;
     }

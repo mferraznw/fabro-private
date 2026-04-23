@@ -165,25 +165,24 @@ impl CredentialResolver {
             if let Some(value) = self.lookup_env_or_vault(vault, env_var) {
                 return Ok(AuthCredential {
                     provider,
+                    base_url: None,
                     details: AuthDetails::ApiKey { key: value },
                 });
             }
         }
 
-        if provider == Provider::OpenAiCompatible
-            && usage == CredentialUsage::ApiRequest
-            && self
-                .lookup_env_or_vault(vault, LITELLM_BASE_URL_ENV)
-                .is_some()
-        {
-            return Ok(AuthCredential {
-                provider,
-                details: AuthDetails::ApiKey {
-                    key: self
-                        .lookup_env_or_vault(vault, LITELLM_API_KEY_ENV)
-                        .unwrap_or_else(|| LITELLM_DEFAULT_API_KEY.to_string()),
-                },
-            });
+        if provider == Provider::OpenAiCompatible && usage == CredentialUsage::ApiRequest {
+            if let Some(base_url) = self.lookup_env_or_vault(vault, LITELLM_BASE_URL_ENV) {
+                return Ok(AuthCredential {
+                    provider,
+                    base_url: Some(base_url),
+                    details: AuthDetails::ApiKey {
+                        key: self
+                            .lookup_env_or_vault(vault, LITELLM_API_KEY_ENV)
+                            .unwrap_or_else(|| LITELLM_DEFAULT_API_KEY.to_string()),
+                    },
+                });
+            }
         }
 
         Err(ResolveError::NotConfigured(provider))
@@ -210,14 +209,26 @@ impl CredentialResolver {
     fn to_api_credential(&self, vault: &Vault, credential: &AuthCredential) -> ApiCredential {
         let mut extra_headers = HashMap::new();
         let base_url = match credential.provider {
-            Provider::Anthropic => self.lookup_env_or_vault(vault, "ANTHROPIC_BASE_URL"),
-            Provider::OpenAi => self.lookup_env_or_vault(vault, "OPENAI_BASE_URL"),
-            Provider::Gemini => self.lookup_env_or_vault(vault, "GEMINI_BASE_URL"),
-            Provider::Kimi
-            | Provider::Zai
-            | Provider::Minimax
-            | Provider::Inception => None,
-            Provider::OpenAiCompatible => self.lookup_env_or_vault(vault, LITELLM_BASE_URL_ENV),
+            Provider::Anthropic => credential
+                .base_url
+                .clone()
+                .or_else(|| self.lookup_env_or_vault(vault, "ANTHROPIC_BASE_URL")),
+            Provider::OpenAi => credential
+                .base_url
+                .clone()
+                .or_else(|| self.lookup_env_or_vault(vault, "OPENAI_BASE_URL")),
+            Provider::Gemini => credential
+                .base_url
+                .clone()
+                .or_else(|| self.lookup_env_or_vault(vault, "GEMINI_BASE_URL")),
+            Provider::Kimi | Provider::Zai | Provider::Minimax | Provider::Inception => {
+                credential.base_url.clone()
+            }
+            Provider::OpenAiCompatible => credential
+                .base_url
+                .clone()
+                .or_else(|| vault.get(LITELLM_BASE_URL_ENV).map(str::to_string))
+                .or_else(|| (self.env_lookup)(LITELLM_BASE_URL_ENV)),
         };
         match &credential.details {
             AuthDetails::ApiKey { key } => ApiCredential {
@@ -354,11 +365,12 @@ mod tests {
 
     use super::*;
     use crate::credential::{OAuthConfig, OAuthTokens};
-    use crate::vault_ext::vault_get_credential;
+    use crate::vault_ext::{vault_get_credential, vault_set_credential};
 
     fn api_key_credential(provider: Provider, key: &str) -> AuthCredential {
         AuthCredential {
             provider,
+            base_url: None,
             details: AuthDetails::ApiKey {
                 key: key.to_string(),
             },
@@ -368,6 +380,7 @@ mod tests {
     fn oauth_credential(token_url: String, expires_at: chrono::DateTime<Utc>) -> AuthCredential {
         AuthCredential {
             provider: Provider::OpenAi,
+            base_url: None,
             details:  AuthDetails::CodexOAuth {
                 tokens:     OAuthTokens {
                     access_token: "expired-access".to_string(),
@@ -718,6 +731,79 @@ mod tests {
             api.auth_header,
             ApiKeyHeader::Bearer(LITELLM_DEFAULT_API_KEY.to_string())
         );
+    }
+
+    #[tokio::test]
+    async fn litellm_api_request_prefers_credential_base_url() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut vault = Vault::load(dir.path().join("secrets.json")).unwrap();
+        let mut credential = api_key_credential(Provider::OpenAiCompatible, "litellm-key");
+        credential.base_url = Some("http://credential.example/v1".to_string());
+        vault_set_credential(&mut vault, "litellm", &credential).unwrap();
+        vault
+            .set(
+                LITELLM_BASE_URL_ENV,
+                "http://secret.example/v1",
+                fabro_vault::SecretType::Environment,
+                None,
+            )
+            .unwrap();
+        let resolver = test_resolver(
+            vault,
+            Arc::new(|name| {
+                (name == LITELLM_BASE_URL_ENV).then(|| "http://env.example/v1".to_string())
+            }),
+        );
+
+        let ResolvedCredential::Api(api) = resolver
+            .resolve(Provider::OpenAiCompatible, CredentialUsage::ApiRequest)
+            .await
+            .unwrap()
+        else {
+            panic!("expected api credential");
+        };
+
+        assert_eq!(
+            api.base_url.as_deref(),
+            Some("http://credential.example/v1")
+        );
+        assert_eq!(
+            api.auth_header,
+            ApiKeyHeader::Bearer("litellm-key".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn litellm_api_request_falls_back_to_vault_before_env() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut vault = Vault::load(dir.path().join("secrets.json")).unwrap();
+        let mut credential = api_key_credential(Provider::OpenAiCompatible, "litellm-key");
+        credential.base_url = None;
+        vault_set_credential(&mut vault, "litellm", &credential).unwrap();
+        vault
+            .set(
+                LITELLM_BASE_URL_ENV,
+                "http://secret.example/v1",
+                fabro_vault::SecretType::Environment,
+                None,
+            )
+            .unwrap();
+        let resolver = test_resolver(
+            vault,
+            Arc::new(|name| {
+                (name == LITELLM_BASE_URL_ENV).then(|| "http://env.example/v1".to_string())
+            }),
+        );
+
+        let ResolvedCredential::Api(api) = resolver
+            .resolve(Provider::OpenAiCompatible, CredentialUsage::ApiRequest)
+            .await
+            .unwrap()
+        else {
+            panic!("expected api credential");
+        };
+
+        assert_eq!(api.base_url.as_deref(), Some("http://secret.example/v1"));
     }
 
     #[tokio::test]

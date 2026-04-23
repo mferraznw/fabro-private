@@ -20,7 +20,7 @@ impl ApiKeyStrategy {
 impl AuthStrategy for ApiKeyStrategy {
     async fn init(&mut self) -> anyhow::Result<AuthContextRequest> {
         Ok(AuthContextRequest::ApiKey {
-            provider:      self.provider,
+            provider: self.provider,
             env_var_names: self
                 .provider
                 .api_key_env_vars()
@@ -34,7 +34,8 @@ impl AuthStrategy for ApiKeyStrategy {
         match response {
             AuthContextResponse::ApiKey { key } => Ok(AuthCredential {
                 provider: self.provider,
-                details:  AuthDetails::ApiKey { key },
+                base_url: None,
+                details: AuthDetails::ApiKey { key },
             }),
             AuthContextResponse::DeviceCodeConfirmed => {
                 Err(anyhow::anyhow!("expected API key response"))

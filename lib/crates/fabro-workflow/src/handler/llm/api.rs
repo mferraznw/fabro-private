@@ -913,6 +913,7 @@ mod tests {
                 "anthropic",
                 &serde_json::to_string(&AuthCredential {
                     provider: Provider::Anthropic,
+                    base_url: None,
                     details: AuthDetails::ApiKey {
                         key: "anthropic-key".to_string(),
                     },

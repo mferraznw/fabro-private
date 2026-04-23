@@ -2,7 +2,9 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use fabro_auth::{CredentialResolver, CredentialUsage, ResolveError, ResolvedCredential};
+use fabro_auth::{
+    ApiKeyHeader, CredentialResolver, CredentialUsage, ResolveError, ResolvedCredential,
+};
 use fabro_config::envfile;
 use fabro_llm::client::Client as LlmClient;
 use fabro_model::Provider;
@@ -62,6 +64,11 @@ pub(crate) struct ProviderCredentials {
     env_lookup: EnvLookup,
 }
 
+pub(crate) struct LiteLlmCredentials {
+    pub(crate) base_url: String,
+    pub(crate) api_key:  Option<String>,
+}
+
 impl ProviderCredentials {
     pub(crate) fn with_env_lookup<F>(vault: Arc<AsyncRwLock<Vault>>, env_lookup: F) -> Self
     where
@@ -73,6 +80,7 @@ impl ProviderCredentials {
         }
     }
 
+    #[cfg(test)]
     pub(crate) async fn get(&self, name: &str) -> Option<String> {
         let env_value = (self.env_lookup)(name);
         if env_value.is_some() {
@@ -114,6 +122,31 @@ impl ProviderCredentials {
             CredentialResolver::with_env_lookup(Arc::clone(&self.vault), self.env_lookup.clone());
         let vault = self.vault.read().await;
         resolver.configured_providers(&vault)
+    }
+
+    pub(crate) async fn litellm_credentials(
+        &self,
+    ) -> Result<Option<LiteLlmCredentials>, ResolveError> {
+        let resolver =
+            CredentialResolver::with_env_lookup(Arc::clone(&self.vault), self.env_lookup.clone());
+        match resolver
+            .resolve(Provider::OpenAiCompatible, CredentialUsage::ApiRequest)
+            .await
+        {
+            Ok(ResolvedCredential::Api(credential)) => {
+                let Some(base_url) = credential.base_url else {
+                    return Ok(None);
+                };
+                let api_key = match credential.auth_header {
+                    ApiKeyHeader::Bearer(value) | ApiKeyHeader::Custom { value, .. } => {
+                        (!value.is_empty() && value != "none").then_some(value)
+                    }
+                };
+                Ok(Some(LiteLlmCredentials { base_url, api_key }))
+            }
+            Ok(ResolvedCredential::Cli(_)) | Err(ResolveError::NotConfigured(_)) => Ok(None),
+            Err(err) => Err(err),
+        }
     }
 }
 
@@ -181,6 +214,7 @@ mod tests {
                 "anthropic",
                 &serde_json::to_string(&AuthCredential {
                     provider: Provider::Anthropic,
+                    base_url: None,
                     details:  AuthDetails::ApiKey {
                         key: "anthropic-key".to_string(),
                     },
@@ -196,5 +230,37 @@ mod tests {
         assert_eq!(credentials.configured_providers().await, vec![
             Provider::Anthropic
         ]);
+    }
+
+    #[tokio::test]
+    async fn litellm_credentials_use_vault_credential_base_url() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut vault = Vault::load(dir.path().join("secrets.json")).unwrap();
+        vault
+            .set(
+                "litellm",
+                &serde_json::to_string(&AuthCredential {
+                    provider: Provider::OpenAiCompatible,
+                    base_url: Some("http://localhost:4000/v1".to_string()),
+                    details:  AuthDetails::ApiKey {
+                        key: "litellm-key".to_string(),
+                    },
+                })
+                .unwrap(),
+                SecretType::Credential,
+                None,
+            )
+            .unwrap();
+        let credentials =
+            ProviderCredentials::with_env_lookup(Arc::new(AsyncRwLock::new(vault)), |_| None);
+
+        let litellm = credentials
+            .litellm_credentials()
+            .await
+            .unwrap()
+            .expect("litellm credentials should resolve");
+
+        assert_eq!(litellm.base_url, "http://localhost:4000/v1");
+        assert_eq!(litellm.api_key.as_deref(), Some("litellm-key"));
     }
 }

@@ -6067,23 +6067,15 @@ async fn fetch_litellm_models(state: &AppState) -> anyhow::Result<Vec<Model>> {
 }
 
 async fn litellm_models_cache(state: &AppState) -> anyhow::Result<Option<LiteLlmModelsCache>> {
-    let Some(base_url) = state.provider_credentials.get("LITELLM_BASE_URL").await else {
+    let Some(credentials) = state.provider_credentials.litellm_credentials().await? else {
         return Ok(None);
     };
     let mut guard = state.litellm_models_cache.lock().await;
-    if let Some(cache) = guard.as_ref() {
-        return Ok(Some(cache.clone()));
-    }
-    let api_key = state
-        .provider_credentials
-        .get("LITELLM_API_KEY")
-        .await
-        .filter(|api_key| !api_key.is_empty() && api_key != "none");
     let ttl = std::env::var("FABRO_LITELLM_MODELS_TTL")
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
         .map_or(Duration::from_secs(60), Duration::from_secs);
-    let cache = LiteLlmModelsCache::new(base_url, api_key, ttl);
+    let cache = LiteLlmModelsCache::new(credentials.base_url, credentials.api_key, ttl);
     *guard = Some(cache.clone());
     Ok(Some(cache))
 }
@@ -6139,11 +6131,7 @@ async fn test_model(
     {
         return ApiError::bad_request(auth_issue_message(info.provider, issue)).into_response();
     }
-    if !llm_result
-        .client
-        .provider_names()
-        .contains(&info.provider.as_str())
-    {
+    if !llm_provider_registered(info.provider, &llm_result.client.provider_names()) {
         return Json(serde_json::json!({
             "model_id": info.id,
             "status": "skip",
@@ -6159,6 +6147,14 @@ async fn test_model(
         "error_message": outcome.error_message,
     }))
     .into_response()
+}
+
+fn llm_provider_registered(provider: Provider, configured: &[&str]) -> bool {
+    configured.iter().any(|name| *name == provider.as_str())
+        || (provider == Provider::OpenAiCompatible
+            && configured
+                .iter()
+                .any(|name| matches!(*name, "litellm" | "openai_compatible")))
 }
 
 fn finish_reason_to_api_stop_reason(reason: &FinishReason) -> String {
@@ -6741,6 +6737,7 @@ type = "http"
         let app = build_router(Arc::clone(&state), AuthMode::Disabled);
         let credential = fabro_auth::AuthCredential {
             provider: Provider::OpenAi,
+            base_url: None,
             details: fabro_auth::AuthDetails::CodexOAuth {
                 tokens: fabro_auth::OAuthTokens {
                     access_token: "access".to_string(),

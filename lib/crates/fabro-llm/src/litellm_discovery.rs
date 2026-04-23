@@ -183,7 +183,9 @@ where
 
 fn litellm_url(base_url: &str, path: &str) -> Result<fabro_http::Url, String> {
     let mut base = validate_litellm_base_url(base_url)?;
-    if !base.path().ends_with('/') {
+    if matches!(base.path(), "" | "/") {
+        base.set_path("/v1/");
+    } else if !base.path().ends_with('/') {
         let path = format!("{}/", base.path());
         base.set_path(&path);
     }
@@ -358,5 +360,17 @@ mod tests {
     fn rejects_metadata_litellm_urls() {
         let err = validate_litellm_base_url("https://169.254.169.254/v1").unwrap_err();
         assert!(err.contains("disallowed"));
+    }
+
+    #[test]
+    fn root_litellm_base_url_defaults_to_v1() {
+        let url = litellm_url("http://localhost:4000", "models").unwrap();
+        assert_eq!(url.as_str(), "http://localhost:4000/v1/models");
+    }
+
+    #[test]
+    fn explicit_litellm_base_url_preserves_path() {
+        let url = litellm_url("http://localhost:4000/v1", "models").unwrap();
+        assert_eq!(url.as_str(), "http://localhost:4000/v1/models");
     }
 }

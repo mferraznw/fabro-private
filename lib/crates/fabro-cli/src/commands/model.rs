@@ -417,6 +417,21 @@ async fn test_model_via_server(
     Ok(response.into_inner())
 }
 
+async fn model_info_from_server_result(
+    client: &fabro_api::Client,
+    model_id: &str,
+) -> Result<Model> {
+    if let Some(info) = Catalog::builtin().get(model_id).cloned() {
+        return Ok(info);
+    }
+
+    fetch_models_from_server(client, None, Some(model_id))
+        .await?
+        .into_iter()
+        .find(|model| model.id == model_id)
+        .with_context(|| format!("Unknown model returned by server: {model_id}"))
+}
+
 #[allow(clippy::print_stdout, clippy::print_stderr)]
 async fn test_models_via_server(
     client: &fabro_api::Client,
@@ -448,12 +463,7 @@ async fn test_models_via_server(
 
         let (info, result_color, status) = match result {
             Ok(resp) => {
-                let info = Catalog::builtin()
-                    .get(&resp.model_id)
-                    .cloned()
-                    .with_context(|| {
-                        format!("Unknown model returned by server: {}", resp.model_id)
-                    })?;
+                let info = model_info_from_server_result(client, &resp.model_id).await?;
                 if resp.status == api_types::ModelTestResultStatus::Ok {
                     (info, Color::Green, "ok".to_string())
                 } else if resp.status == api_types::ModelTestResultStatus::Skip {
@@ -472,10 +482,7 @@ async fn test_models_via_server(
                 bail!("Unknown model: {model_id}");
             }
             Err(err) => {
-                let info = Catalog::builtin()
-                    .get(model_id)
-                    .cloned()
-                    .with_context(|| format!("Unknown model: {model_id}"))?;
+                let info = model_info_from_server_result(client, model_id).await?;
                 failures += 1;
                 (info, Color::Red, format!("error: {err}"))
             }
